@@ -2,6 +2,10 @@
 
 Next.js App Router + TypeScript + Tailwind, a two-person LiveKit room, explicit consent, 25-second DetectifAI enrollment, and a manual eight-second check of the candidate's subscribed remote microphone track. This is implemented code, **not yet a verified live-provider demonstration**.
 
+## Deploy to Vercel and use two laptops
+
+Follow [Vercel deployment instructions](docs/VERCEL_DEPLOYMENT.md) for the exact eight environment variables and remote call sequence. Shared Turso/libSQL storage now supports Vercel; local SQLite remains the development fallback. The public `/test-audio` page supports uploads or microphone recording and actual deepfake verdicts/scores. Paid submissions require consent and the demo access code.
+
 ## Run locally
 
 Requires Node 22.13+ with `node:sqlite` (tested with Node 22.23.2).
@@ -32,7 +36,7 @@ The npm scripts use Next.js's Webpack option because Turbopack's CSS worker coul
 5. View both returned dimensions. Pending, uncertainty, partial error, total failure, and cancellation never count as passed. This is sampled, manual analysis; no continuous coverage is claimed.
 6. End the session or withdraw consent. The backend revokes processing before contacting providers, closes the room, and attempts reference deletion. Cleanup success is shown only when confirmed. Retry cleanup if needed.
 
-Use headphones and organizer-authorized, consented speech. Two physical devices need an HTTPS origin on a persistent Node deployment (or an explicitly configured HTTPS development tunnel); a plain LAN HTTP URL is not sufficient for browser microphone access. Restart the server after changing configuration.
+Use headphones and organizer-authorized, consented speech. Two physical devices need an HTTPS origin on the Vercel deployment (or an explicitly configured HTTPS development tunnel); a plain LAN HTTP URL is not sufficient for browser microphone access. Restart the server after changing configuration.
 
 ## API contract and implementation
 
@@ -65,10 +69,10 @@ See [milestone evidence and blockers](docs/MILESTONE_STATUS.md). Unit tests use 
 
 ## Current limits
 
-- **Not serverless-ready:** SQLite requires one persistent Node host/volume. Do not deploy this build to Vercel's ephemeral filesystem or independently replicated servers. Shared storage is needed first. This deliberately improves on the planning document's stateless consent model.
+- **Shared storage required on Vercel:** configure `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`. Without them, hosted session creation fails explicitly. Local SQLite is supported only outside Vercel. Existing local sessions are not migrated; create fresh sessions on the deployment.
 - No automatic cleanup after a browser crash or expired invitation. Use the provider dashboard to remove orphaned `ss-` speaker references. End/withdraw attempts deletion; previously transmitted voice cannot be recalled.
 - Server-side revocation is immediate for new work; the other browser notices within the one-second status poll. In-flight provider processing cannot be reliably recalled. LiveKit token revocation behavior depends on deployment; stale tokens expire after five minutes, and cooperative clients disconnect on ended status.
 - SQLite metadata has no automatic retention purge yet. Results visible in the UI are held in memory and are not restored on refresh.
 - Fixed global and per-session limits are appropriate for a restricted single-host demo, not public production abuse protection. Put the app behind deployment access controls for a public-network test.
 - No legal identity or liveness claim. Enrollment continuity and synthetic-speech results are separate signals requiring human review.
-- Polished dashboard, continuous windows, question timeline, rechecks, summary/export, and public deployment are deferred to later milestones.
+- Polished dashboard, continuous windows, question timeline, rechecks, summary/export, are deferred to later milestones. Deployment setup is covered in the Vercel guide.

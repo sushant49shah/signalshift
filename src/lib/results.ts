@@ -69,3 +69,32 @@ export function normalizeAnalysis(
     requestId: identifier(b.request_id),
   };
 }
+
+export function normalizeDetection(body: unknown, httpOk: boolean) {
+  const b = object(body),
+    r = object(b.result);
+  const valid = httpOk && b.object === "deepfake.detection" && !b.error;
+  const verdict =
+    valid && ["real", "fake", "not_sure"].includes(String(r.verdict))
+      ? (r.verdict as "real" | "fake" | "not_sure")
+      : "unavailable";
+  return {
+    verdict,
+    label:
+      verdict === "real"
+        ? "Real"
+        : verdict === "fake"
+          ? "Fake"
+          : "Inconclusive",
+    score:
+      valid &&
+      typeof r.score === "number" &&
+      Number.isFinite(r.score) &&
+      r.score >= 0 &&
+      r.score <= 1
+        ? r.score
+        : null,
+    status: verdict === "unavailable" ? "error" : "complete",
+    operationId: identifier(b.operation_id),
+  };
+}

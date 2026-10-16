@@ -114,37 +114,37 @@ test("short, silent, truncated, relabeled-rate, oversized, and stereo audio are 
   new DataView(stereo).setUint16(22, 2, true);
   assert.throws(() => inspectWav(stereo, "analyze"));
 });
-test("capabilities isolate roles and sessions, expire, and are hashed at rest", () => {
-  const a = createSession(),
-    b = createSession();
-  assert.ok(authenticate(a.id, a.candidate, "candidate"));
-  assert.equal(authenticate(a.id, a.candidate, "interviewer"), undefined);
-  assert.equal(authenticate(b.id, a.candidate, "candidate"), undefined);
-  assert.notEqual(getSession(a.id)?.candidate, a.candidate);
-  db().prepare("UPDATE sessions SET expires=0 WHERE id=?").run(a.id);
-  assert.equal(authenticate(a.id, a.candidate, "candidate"), undefined);
+test("capabilities isolate roles and sessions, expire, and are hashed at rest", async () => {
+  const a = await createSession(),
+    b = await createSession();
+  assert.ok(await authenticate(a.id, a.candidate, "candidate"));
+  assert.equal(await authenticate(a.id, a.candidate, "interviewer"), undefined);
+  assert.equal(await authenticate(b.id, a.candidate, "candidate"), undefined);
+  assert.notEqual((await getSession(a.id))?.candidate, a.candidate);
+  await db().prepare("UPDATE sessions SET expires=0 WHERE id=?").run(a.id);
+  assert.equal(await authenticate(a.id, a.candidate, "candidate"), undefined);
 });
-test("consent revocation prevents new work and invalidates in-flight snapshot", () => {
-  const created = createSession();
-  const initial = getSession(created.id)!;
-  assert.equal(claim(initial), false);
-  db()
+test("consent revocation prevents new work and invalidates in-flight snapshot", async () => {
+  const created = await createSession();
+  const initial = (await getSession(created.id))!;
+  assert.equal(await claim(initial), false);
+  await db()
     .prepare("UPDATE sessions SET consent=? WHERE id=?")
     .run(Date.now(), created.id);
-  const s = getSession(created.id)!;
-  assert.equal(active(s), true);
-  assert.equal(claim(s), true);
-  assert.equal(claim(s), false);
-  db()
+  const s = (await getSession(created.id))!;
+  assert.equal(await active(s), true);
+  assert.equal(await claim(s), true);
+  assert.equal(await claim(s), false);
+  await db()
     .prepare("UPDATE sessions SET consent=NULL,ended=1 WHERE id=?")
     .run(created.id);
-  assert.equal(active(s), false);
-  assert.equal(claim(s), false);
+  assert.equal(await active(s), false);
+  assert.equal(await claim(s), false);
 });
-test("persistent rate limit bounds repeated requests", () => {
-  assert.equal(rateLimit("test", 2, 60), true);
-  assert.equal(rateLimit("test", 2, 60), true);
-  assert.equal(rateLimit("test", 2, 60), false);
+test("persistent rate limit bounds repeated requests", async () => {
+  assert.equal(await rateLimit("test", 2, 60), true);
+  assert.equal(await rateLimit("test", 2, 60), true);
+  assert.equal(await rateLimit("test", 2, 60), false);
 });
 test("provider adapter sends real documented multipart fields; same key and bytes survive a bounded retry (mock transport)", async () => {
   const original = globalThis.fetch;
@@ -252,4 +252,54 @@ test("AudioWorklet produces one complete bounded segment and averages channels (
     [...new Float32Array(messages[0])],
     [0, 0.5, 0.5, 0.25, 0.5],
   );
+});
+
+test("Vercel refuses ephemeral local storage without Turso", async () => {
+  process.env.VERCEL = "1";
+  try {
+    await assert.rejects(() => getSession("not-real"), /TURSO_DATABASE_URL/);
+  } finally {
+    delete process.env.VERCEL;
+  }
+});
+test("concurrent claims allow only one upload, and expired rate buckets reset", async () => {
+  const created = await createSession();
+  await db()
+    .prepare("UPDATE sessions SET consent=? WHERE id=?")
+    .run(Date.now(), created.id);
+  const s = (await getSession(created.id))!;
+  const claims = await Promise.all([claim(s), claim(s), claim(s)]);
+  assert.equal(claims.filter(Boolean).length, 1);
+  await rateLimit("reset-test", 1, 60);
+  await db()
+    .prepare("UPDATE limits SET expires=0 WHERE bucket=?")
+    .run("reset-test");
+  assert.equal(await rateLimit("reset-test", 1, 60), true);
+  assert.equal(await rateLimit("reset-test", 1, 60), false);
+});
+test("standalone detection follows verdict, preserves actual score, and never invents a pass", async () => {
+  const { normalizeDetection } = await import("../src/lib/results");
+  const body = (verdict: string, score: unknown) => ({
+    object: "deepfake.detection",
+    result: { verdict, score },
+  });
+  assert.equal(normalizeDetection(body("fake", 0.1), true).label, "Fake");
+  assert.equal(normalizeDetection(body("real", 0.9), true).label, "Real");
+  assert.equal(
+    normalizeDetection(body("not_sure", 0.7), true).label,
+    "Inconclusive",
+  );
+  assert.equal(normalizeDetection(body("real", 0.35), true).score, 0.35);
+  for (const value of [
+    null,
+    {},
+    body("unknown", 1),
+    { error: { code: "failed" } },
+  ])
+    assert.equal(normalizeDetection(value, true).label, "Inconclusive");
+  assert.equal(normalizeDetection(body("real", 0.3), false).score, null);
+  assert.equal(normalizeDetection(body("real", 2), true).score, null);
+  assert.equal(normalizeDetection(body("real", 0.3), false).status, "error");
+  assert.equal(inspectWav(tone(30, 16000), "test").duration, 30);
+  assert.throws(() => inspectWav(tone(31, 16000), "test"));
 });

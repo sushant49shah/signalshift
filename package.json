@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "engines": {
-    "node": ">=22.13.0"
+    "node": "22.x"
   },
   "scripts": {
     "dev": "next dev --webpack",
@@ -14,6 +14,7 @@
     "format": "prettier --write src tests public/pcm-worklet.js next.config.ts postcss.config.mjs tsconfig.json package.json"
   },
   "dependencies": {
+    "@libsql/client": "0.18.0",
     "livekit-client": "2.22.4",
     "livekit-server-sdk": "2.19.1",
     "next": "16.4.2",

@@ -19,6 +19,7 @@ type Session = {
   ended: boolean;
   cleanup: string | null;
   expires: number;
+  serverTime: number;
 };
 type Result = AnalysisResult & {
   id: string;
@@ -115,6 +116,7 @@ export default function Interview() {
     operation = useRef<AbortController | null>(null),
     sessionRef = useRef<Session | null>(null),
     processing = useRef(false);
+  const clockOffset = useRef(0);
   sessionRef.current = session;
   function cancel() {
     operation.current?.abort();
@@ -134,6 +136,7 @@ export default function Interview() {
       if (invite && r === "candidate") {
         api("join", { id: sid, role: r, invitation: invite })
           .then((s) => {
+            clockOffset.current = s.serverTime - Date.now();
             setSession(s);
             history.replaceState(null, "", url.pathname + url.search);
             setReady(true);
@@ -160,6 +163,7 @@ export default function Interview() {
       try {
         const s = await api("status", { id, role });
         if (stopped) return;
+        clockOffset.current = s.serverTime - Date.now();
         setSession(s);
         if (s.ended) {
           cancel();
@@ -207,7 +211,7 @@ export default function Interview() {
       setId(data.id);
       setRole("interviewer");
       setInvitation(
-        `${location.origin}/?session=${data.id}&role=candidate#${data.invitation}`,
+        `${data.origin}/?session=${data.id}&role=candidate#${data.invitation}`,
       );
       history.replaceState(null, "", `/?session=${data.id}&role=interviewer`);
     });
@@ -339,8 +343,8 @@ export default function Interview() {
         form.set("role", role);
         form.set("file", clip.file, "sample.wav");
         form.set("operationId", crypto.randomUUID());
-        form.set("captureStart", String(clip.start));
-        form.set("captureEnd", String(clip.end));
+        form.set("captureStart", String(clip.start + clockOffset.current));
+        form.set("captureEnd", String(clip.end + clockOffset.current));
         const result = await api(kind, form, controller.signal);
         if (controller.signal.aborted || sessionRef.current?.ended) return;
         if (kind === "enroll") {
@@ -393,6 +397,9 @@ export default function Interview() {
   const candidateMic = candidate?.getTrackPublication(Track.Source.Microphone);
   return (
     <main className="mx-auto max-w-6xl space-y-6 px-5 py-10">
+      <nav>
+        <a href="/test-audio">Test audio without a call →</a>
+      </nav>
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <p className="text-xs font-bold uppercase tracking-widest text-blue-700">

@@ -1,5 +1,7 @@
 # Foundation milestone evidence — 16 October 2026
 
+**Historical first-milestone record:** subsequent work adds shared Turso storage for Vercel and `/test-audio`. See [current deployment guide](VERCEL_DEPLOYMENT.md). The credential and hosting blockers below describe the earlier checkpoint.
+
 ## Implemented
 
 - Next.js App Router, TypeScript, Tailwind CSS, pinned dependencies, Node server routes.

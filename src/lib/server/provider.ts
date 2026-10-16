@@ -31,12 +31,12 @@ export function providerMessage(status: number) {
 export async function provider(
   path: string,
   init: RequestInit,
-  canContinue: () => boolean = () => true,
+  canContinue: () => boolean | Promise<boolean> = () => true,
 ) {
   const key = required("DETECTIF_API_KEY");
   let last: { ok: boolean; status: number; body: unknown } | undefined;
   for (let attempt = 0; attempt < 3; attempt++) {
-    if (!canContinue())
+    if (!(await canContinue()))
       throw new AppError(409, "Consent was withdrawn or the session ended.");
     try {
       const response = await fetch(BASE + path, {

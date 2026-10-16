@@ -22,6 +22,7 @@ async function post(path, data, cookie = "", requestOrigin = origin) {
   };
 }
 assert.equal((await fetch(origin)).status, 200);
+assert.equal((await fetch(origin + "/test-audio")).status, 200);
 assert.equal(
   (await post("sessions", {}, "", "https://untrusted.example")).status,
   403,
@@ -97,12 +98,48 @@ assert.equal(
   400,
 );
 assert.equal((await upload("enroll", "candidate", joined.cookie)).status, 422);
+// Public test page guards: invalid requests must never reach DetectifAI.
+for (const accepted of [false, true]) {
+  const form = new FormData();
+  form.set(
+    "file",
+    new Blob(["not a WAV"], { type: "audio/wav" }),
+    "invalid.wav",
+  );
+  form.set("consent", String(accepted));
+  form.set("operationId", crypto.randomUUID());
+  form.set(
+    "accessCode",
+    process.env.SMOKE_ACCESS_CODE || process.env.DEMO_ACCESS_CODE || "",
+  );
+  const result = await fetch(origin + "/api/test-audio", {
+    method: "POST",
+    headers: { Origin: origin },
+    body: form,
+  });
+  assert.equal(result.status, accepted ? 422 : 403);
+}
 // Revoke this test-only session directly without contacting LiveKit.
-const db = new DatabaseSync(
-  process.env.DATABASE_PATH || ".data/signalshift.sqlite",
-);
-db.prepare("UPDATE sessions SET ended=1,consent=NULL WHERE id=?").run(id);
-db.close();
+if (process.env.TURSO_DATABASE_URL) {
+  const { createClient } = await import("@libsql/client/web");
+  const database = createClient({
+    url: process.env.TURSO_DATABASE_URL,
+    authToken: process.env.TURSO_AUTH_TOKEN,
+  });
+  await database.execute({
+    sql: "UPDATE sessions SET ended=1,consent=NULL WHERE id=?",
+    args: [id],
+  });
+  database.close();
+} else {
+  const database = new DatabaseSync(
+    process.env.DATABASE_PATH || ".data/signalshift.sqlite",
+  );
+  database
+    .prepare("UPDATE sessions SET ended=1,consent=NULL WHERE id=?")
+    .run(id);
+  database.close();
+}
 assert.equal(
   (await post("status", { id, role: "candidate" }, joined.cookie)).body.ended,
   true,

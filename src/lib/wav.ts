@@ -26,7 +26,10 @@ export function encodeWav(
   }
   return buffer;
 }
-export function inspectWav(buffer: ArrayBuffer, kind: "enroll" | "analyze") {
+export function inspectWav(
+  buffer: ArrayBuffer,
+  kind: "enroll" | "analyze" | "test",
+) {
   const v = new DataView(buffer),
     text = (o: number, n: number) =>
       String.fromCharCode(...new Uint8Array(buffer, o, n));
@@ -59,12 +62,12 @@ export function inspectWav(buffer: ArrayBuffer, kind: "enroll" | "analyze") {
   if (
     kind === "enroll"
       ? duration < 20 || duration > 30
-      : duration <= 4 || duration > 15
+      : duration <= 4 || duration > (kind === "test" ? 30 : 15)
   )
     throw new Error(
       kind === "enroll"
         ? "Record 20–30 seconds for enrollment."
-        : "Analysis requires more than 4 and at most 15 seconds.",
+        : "Analysis requires more than 4 seconds (up to 15 for calls or 30 for test audio).",
     );
   let energy = 0;
   for (let i = 44; i < buffer.byteLength; i += 2)

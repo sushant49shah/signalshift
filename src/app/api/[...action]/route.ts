@@ -1,3 +1,9 @@
+import {
+  appOrigin,
+  checkOrigin,
+  checkAccessCode,
+  readBody,
+} from "@/lib/server/http";
 import "server-only";
 import { NextRequest, NextResponse } from "next/server";
 import {
@@ -5,7 +11,7 @@ import {
   RoomServiceClient,
   TrackSource,
 } from "livekit-server-sdk";
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
   active,
@@ -45,7 +51,7 @@ function response(value: unknown, status = 200) {
 function setCookie(res: NextResponse, id: string, role: Role, token: string) {
   res.cookies.set(cookieName(id, role), token, {
     httpOnly: true,
-    secure: required("APP_ORIGIN").startsWith("https:"),
+    secure: appOrigin().startsWith("https:"),
     sameSite: "strict",
     path: "/api",
     maxAge: 7200,
@@ -58,33 +64,12 @@ function mediaService() {
     required("LIVEKIT_API_SECRET"),
   );
 }
-async function readBody(req: NextRequest, max: number) {
-  const length = Number(req.headers.get("content-length") || 0);
-  if (length > max) throw new AppError(413, "Upload is too large.");
-  const reader = req.body?.getReader();
-  if (!reader) throw new AppError(400, "Request body required.");
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.length;
-    if (total > max) {
-      await reader.cancel();
-      throw new AppError(413, "Upload is too large.");
-    }
-    chunks.push(value);
-  }
-  return Buffer.concat(chunks);
-}
 export async function POST(
   req: NextRequest,
   context: { params: Promise<{ action: string[] }> },
 ) {
   try {
-    const origin = required("APP_ORIGIN");
-    if (req.headers.get("origin") !== origin)
-      throw new AppError(403, "Request origin is not allowed.");
+    checkOrigin(req);
     const action = (await context.params).action.join("/");
     const upload = action === "enroll" || action === "analyze";
     const bytes = await readBody(req, upload ? 3_600_000 : 4096);
@@ -97,32 +82,25 @@ export async function POST(
       ? Object.fromEntries(form!.entries())
       : JSON.parse(bytes.toString());
     if (action === "sessions") {
-      const code = process.env.DEMO_ACCESS_CODE;
-      if (!origin.startsWith("http://localhost") && !code)
-        throw new AppError(
-          503,
-          "Set DEMO_ACCESS_CODE before exposing the demo.",
-        );
-      if (code) {
-        const actual = Buffer.from(hash(String(input.accessCode || ""))),
-          expected = Buffer.from(hash(code));
-        if (!timingSafeEqual(actual, expected))
-          throw new AppError(403, "Invalid demo access code.");
-      }
-      if (!rateLimit("create-global", 10, 3600))
+      checkAccessCode(input.accessCode);
+      if (!(await rateLimit("create-global", 10, 3600)))
         throw new AppError(
           429,
           "Room creation limit reached. Try again later.",
         );
-      const created = createSession();
-      const res = response({ id: created.id, invitation: created.candidate });
+      const created = await createSession();
+      const res = response({
+        id: created.id,
+        invitation: created.candidate,
+        origin: appOrigin(),
+      });
       setCookie(res, created.id, "interviewer", created.interviewer);
       return res;
     }
     const { id, role } = authSchema.parse(input);
     if (action === "join") {
       const token = z.string().min(40).max(100).parse(input.invitation);
-      const s = authenticate(id, token, "candidate");
+      const s = await authenticate(id, token, "candidate");
       if (role !== "candidate" || !s || s.ended)
         throw new AppError(403, "Invitation is invalid, expired, or ended.");
       const res = response(publicSession(s));
@@ -130,7 +108,7 @@ export async function POST(
       return res;
     }
     const token = req.cookies.get(cookieName(id, role))?.value || "";
-    const s = authenticate(id, token, role);
+    const s = await authenticate(id, token, role);
     if (!s)
       throw new AppError(
         403,
@@ -141,7 +119,7 @@ export async function POST(
       if (action === "withdraw" && role !== "candidate")
         throw new AppError(403, "Only the candidate can withdraw consent.");
       // Revoke before awaiting provider calls; no new billable requests can start.
-      db()
+      await db()
         .prepare(
           "UPDATE sessions SET consent=NULL,enrolled=0,ended=1 WHERE id=?",
         )
@@ -156,7 +134,9 @@ export async function POST(
       const cleanup = s.speaker
         ? await deleteSpeaker(s.speaker)
         : "No speaker reference was created.";
-      db().prepare("UPDATE sessions SET cleanup=? WHERE id=?").run(cleanup, id);
+      await db()
+        .prepare("UPDATE sessions SET cleanup=? WHERE id=?")
+        .run(cleanup, id);
       return response({ ended: true, cleanup, roomCleanup });
     }
     if (s.ended) throw new AppError(409, "This session has ended.");
@@ -167,12 +147,12 @@ export async function POST(
         input.notice !== "2026-10-16-v1"
       )
         throw new AppError(403, "Explicit candidate consent is required.");
-      db()
+      await db()
         .prepare(
-          "UPDATE sessions SET consent=COALESCE(consent,?),notice=? WHERE id=?",
+          "UPDATE sessions SET consent=COALESCE(consent,?),notice=? WHERE id=? AND ended=0",
         )
         .run(Date.now(), input.notice, id);
-      return response(publicSession(getSession(id)!));
+      return response(publicSession((await getSession(id))!));
     }
     if (action === "rooms/token") {
       if (role === "candidate" && !s.consent)
@@ -183,7 +163,7 @@ export async function POST(
       const url = required("LIVEKIT_URL");
       const key = required("LIVEKIT_API_KEY"),
         secret = required("LIVEKIT_API_SECRET");
-      if (!rateLimit("token-" + id, 20, 60))
+      if (!(await rateLimit("token-" + id, 20, 60)))
         throw new AppError(429, "Too many room token requests.");
       await mediaService().createRoom({
         name: "ss-" + id,
@@ -242,9 +222,9 @@ export async function POST(
     )
       throw new AppError(400, "Invalid capture interval.");
     const digest = hash(new Uint8Array(audio));
-    const previous = db()
+    const previous = (await db()
       .prepare("SELECT * FROM operations WHERE id=?")
-      .get(operationId) as
+      .get(operationId)) as
       | { session: string; kind: string; digest: string; result: string | null }
       | undefined;
     if (previous) {
@@ -269,21 +249,23 @@ export async function POST(
       throw new AppError(409, "A successful voice enrollment is required.");
     required("DETECTIF_API_KEY");
     if (
-      !rateLimit("upload-" + id, 15, 60) ||
-      !rateLimit("upload-global", 100, 3600)
+      !(await rateLimit("upload-" + id, 15, 60)) ||
+      !(await rateLimit("upload-global", 100, 3600))
     )
       throw new AppError(
         429,
         "Analysis limit reached. Wait before trying again.",
       );
-    if (!claim(s))
+    if (!(await claim(s)))
       throw new AppError(
         409,
         "Another operation is pending, or consent has changed.",
       );
     const speaker = s.speaker || "ss-" + randomUUID();
-    db().prepare("UPDATE sessions SET speaker=? WHERE id=?").run(speaker, id);
-    db()
+    await db()
+      .prepare("UPDATE sessions SET speaker=? WHERE id=?")
+      .run(speaker, id);
+    await db()
       .prepare(
         "INSERT INTO operations (id,session,kind,digest) VALUES (?,?,?,?)",
       )
@@ -306,10 +288,10 @@ export async function POST(
         },
         () => active(s),
       );
-      if (!active(s)) {
+      if (!(await active(s))) {
         if (action === "enroll") {
           const cleanup = await deleteSpeaker(speaker);
-          db()
+          await db()
             .prepare("UPDATE sessions SET cleanup=? WHERE id=?")
             .run(cleanup, id);
         }
@@ -340,11 +322,16 @@ export async function POST(
             502,
             "Enrollment response could not be validated. Reference is not ready.",
           );
-        db()
+        const enrolled = await db()
           .prepare(
             "UPDATE sessions SET enrolled=1 WHERE id=? AND ended=0 AND consent=?",
           )
           .run(id, s.consent);
+        if (enrolled.changes !== 1)
+          throw new AppError(
+            409,
+            "Session ended before enrollment could be saved.",
+          );
         output = { enrolled: true };
       } else {
         const body = object(upstream.body);
@@ -362,12 +349,14 @@ export async function POST(
           providerStatus: upstream.status,
         };
       }
-      db()
+      await db()
         .prepare("UPDATE operations SET result=? WHERE id=?")
         .run(JSON.stringify(output), operationId);
       return response(output);
     } finally {
-      db().prepare("UPDATE sessions SET busy=0 WHERE id=?").run(id);
+      await db()
+        .prepare("UPDATE sessions SET busy=0 WHERE id=? AND busy=?")
+        .run(id, s.busy);
     }
   } catch (error) {
     if (error instanceof AppError)
