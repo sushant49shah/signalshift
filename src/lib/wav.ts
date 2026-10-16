@@ -61,13 +61,13 @@ export function inspectWav(
   const duration = bytes / 2 / rate;
   if (
     kind === "enroll"
-      ? duration < 20 || duration > 30
-      : duration <= 4 || duration > (kind === "test" ? 30 : 15)
+      ? duration < 15 || duration > 30
+      : duration <= 4 || duration > 30
   )
     throw new Error(
       kind === "enroll"
-        ? "Record 20–30 seconds for enrollment."
-        : "Analysis requires more than 4 seconds (up to 15 for calls or 30 for test audio).",
+        ? "Record 15–30 seconds for enrollment."
+        : "Analysis needs more than 4 seconds and no more than 30 seconds of audio.",
     );
   let energy = 0;
   for (let i = 44; i < buffer.byteLength; i += 2)

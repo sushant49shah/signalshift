@@ -13,6 +13,7 @@ import {
   claim,
   active,
   rateLimit,
+  verificationHistory,
 } from "../src/lib/server/store";
 import { provider } from "../src/lib/server/provider";
 process.env.DATABASE_PATH = join(
@@ -51,6 +52,42 @@ test("partial non-2xx response preserves synthetic-speech concern", () => {
   assert.equal(result.outcome, "concern");
   assert.equal(result.partialFailure, true);
   assert.equal(result.speakerError, "insufficient_speech");
+});
+test("actual provider scores and thresholds are kept separate with documented meanings", () => {
+  const result = normalizeAnalysis(
+    {
+      object: "speaker.verification",
+      operation_id: "op_speaker",
+      request_id: "req_combined",
+      result: {
+        decision: "match",
+        similarity: 0.7412,
+        threshold: 0.53,
+        duration_seconds: 9.2,
+      },
+      deepfake: {
+        verdict: "fake",
+        score: 0.91,
+        threshold: 0.62,
+        decided_by: "main_model",
+        operation_id: "op_deepfake",
+        duration_seconds: 9.2,
+        segments: [{ start: 0, end: 4, score: 0.88 }],
+      },
+    },
+    true,
+  );
+  assert.equal(result.speaker, "match");
+  assert.equal(result.deepfake, "fake");
+  assert.equal(result.outcome, "concern");
+  assert.equal(result.speakerSimilarity, 0.7412);
+  assert.equal(result.speakerThreshold, 0.53);
+  assert.equal(result.deepfakeScore, 0.91);
+  assert.equal(result.deepfakeThreshold, 0.62);
+  assert.deepEqual(result.deepfakeSegments, [
+    { start: 0, end: 4, score: 0.88 },
+  ]);
+  assert.equal(result.requestId, "req_combined");
 });
 test("nested deepfake error preserves speaker mismatch but never marks both passed", () => {
   const result = normalizeAnalysis(
@@ -100,8 +137,11 @@ test("complete WAV has real duration, PCM sample rate, and valid lengths", () =>
   });
 });
 test("short, silent, truncated, relabeled-rate, oversized, and stereo audio are rejected", () => {
-  assert.throws(() => inspectWav(tone(19), "enroll"));
+  assert.throws(() => inspectWav(tone(14), "enroll"));
   assert.throws(() => inspectWav(tone(4), "analyze"));
+  assert.ok(Math.abs(inspectWav(tone(4.1), "analyze").duration - 4.1) < 0.001);
+  assert.equal(inspectWav(tone(30, 16000), "analyze").duration, 30);
+  assert.throws(() => inspectWav(tone(30.1, 16000), "analyze"));
   assert.throws(() =>
     inspectWav(encodeWav(new Float32Array(8 * 48000), 48000), "analyze"),
   );
@@ -145,6 +185,66 @@ test("persistent rate limit bounds repeated requests", async () => {
   assert.equal(await rateLimit("test", 2, 60), true);
   assert.equal(await rateLimit("test", 2, 60), true);
   assert.equal(await rateLimit("test", 2, 60), false);
+});
+test("verification history retains repeated answers with their question and session in order", async () => {
+  const firstSession = await createSession();
+  const otherSession = await createSession();
+  const first = {
+    id: "op_history_1",
+    question: "Describe your last project.",
+    captureStart: 1000,
+    outcome: "concern",
+  };
+  const repeated = {
+    id: "op_history_2",
+    question: "Describe your last project.",
+    captureStart: 5000,
+    outcome: "passed",
+  };
+  await db()
+    .prepare(
+      "INSERT INTO operations (id,session,kind,digest,result) VALUES (?,?,?,?,?)",
+    )
+    .run(
+      first.id,
+      firstSession.id,
+      "analyze",
+      "digest-1",
+      JSON.stringify(first),
+    );
+  await db()
+    .prepare(
+      "INSERT INTO operations (id,session,kind,digest,result) VALUES (?,?,?,?,?)",
+    )
+    .run(
+      repeated.id,
+      firstSession.id,
+      "analyze",
+      "digest-2",
+      JSON.stringify(repeated),
+    );
+  await db()
+    .prepare(
+      "INSERT INTO operations (id,session,kind,digest,result) VALUES (?,?,?,?,?)",
+    )
+    .run(
+      "op_history_other",
+      otherSession.id,
+      "analyze",
+      "digest-3",
+      JSON.stringify({ ...repeated, id: "op_history_other" }),
+    );
+  const history = await verificationHistory(firstSession.id);
+  assert.deepEqual(
+    history.map((item) => item.id),
+    [first.id, repeated.id],
+  );
+  assert.deepEqual(
+    history.map((item) => item.question),
+    [first.question, repeated.question],
+  );
+  assert.equal(history[0].outcome, "concern");
+  assert.equal(history[1].outcome, "passed");
 });
 test("provider adapter sends real documented multipart fields; same key and bytes survive a bounded retry (mock transport)", async () => {
   const original = globalThis.fetch;
@@ -219,6 +319,7 @@ test("AudioWorklet produces one complete bounded segment and averages channels (
   const { readFileSync } = await import("node:fs");
   const { runInNewContext } = await import("node:vm");
   let Processor: new (options: unknown) => {
+    port: { onmessage?: (event: { data: unknown }) => void };
     process(input: Float32Array[][]): boolean;
   };
   const messages: ArrayBuffer[] = [];
@@ -251,6 +352,16 @@ test("AudioWorklet produces one complete bounded segment and averages channels (
   assert.deepEqual(
     [...new Float32Array(messages[0])],
     [0, 0.5, 0.5, 0.25, 0.5],
+  );
+  const earlyStop = new Processor!({ processorOptions: { frames: 10 } });
+  earlyStop.process([[new Float32Array([0.1, 0.2, 0.3])]]);
+  earlyStop.port.onmessage?.({ data: "stop" });
+  assert.equal(earlyStop.process([]), false);
+  assert.deepEqual(
+    [...new Float32Array(messages[1])].map((sample) =>
+      Number(sample.toFixed(5)),
+    ),
+    [0.1, 0.2, 0.3],
   );
 });
 

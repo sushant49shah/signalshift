@@ -75,6 +75,9 @@ export function db() {
         async get(...args: Value[]) {
           return (await execute(sql, args)).rows[0];
         },
+        async all(...args: Value[]) {
+          return (await execute(sql, args)).rows;
+        },
       };
     },
   };
@@ -133,6 +136,20 @@ export async function claim(s: Session) {
     return true;
   }
   return false;
+}
+export async function verificationHistory(id: string) {
+  const rows = (await db()
+    .prepare(
+      "SELECT result FROM operations WHERE session=? AND kind='analyze' AND result IS NOT NULL ORDER BY rowid ASC",
+    )
+    .all(id)) as { result?: string }[];
+  return rows.flatMap((row) => {
+    try {
+      return row.result ? [JSON.parse(row.result)] : [];
+    } catch {
+      return [];
+    }
+  });
 }
 export async function active(s: Session) {
   const current = await getSession(s.id);

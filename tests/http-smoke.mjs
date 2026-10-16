@@ -73,6 +73,36 @@ const consent = await post(
 assert.equal(consent.status, 200);
 assert.equal(consent.body.consent, true);
 assert.equal(consent.body.enrolled, false);
+const preflightStart = consent.body.serverTime;
+const incomplete = await post(
+  "incomplete",
+  {
+    id,
+    role: "interviewer",
+    operationId: crypto.randomUUID(),
+    question: "Describe your recent project.",
+    captureStart: preflightStart,
+    captureEnd: preflightStart + 1000,
+    reason: "Audio was too short for verification.",
+  },
+  created.cookie,
+);
+assert.equal(incomplete.status, 200);
+assert.equal(incomplete.body.outcome, "incomplete");
+assert.equal(incomplete.body.question, "Describe your recent project.");
+assert.equal(
+  (await post("history", { id, role: "interviewer" }, created.cookie)).status,
+  200,
+);
+assert.equal(
+  (await post("history", { id, role: "interviewer" }, created.cookie)).body
+    .length,
+  1,
+);
+assert.equal(
+  (await post("history", { id, role: "candidate" }, joined.cookie)).status,
+  403,
+);
 async function upload(action, role, cookie, extra = false) {
   const form = new FormData();
   form.set("id", id);
@@ -149,5 +179,5 @@ assert.equal(
   409,
 );
 console.log(
-  "HTTP smoke passed: page, origin rejection, cookie session creation, role isolation, invitation exchange, declined/affirmative fixture consent, pre-consent and revoked-session token rejection, forbidden speaker substitution, malformed WAV rejection. No media/provider checks performed.",
+  "HTTP smoke passed: page, origin rejection, cookie session creation, role isolation, invitation exchange, declined/affirmative fixture consent, interviewer-only question history, preflight incomplete logging, pre-consent and revoked-session token rejection, forbidden speaker substitution, malformed WAV rejection. No media/provider checks performed.",
 );

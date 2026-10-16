@@ -3,6 +3,7 @@ export async function capture(
   track: MediaStreamTrack,
   seconds: number,
   signal: AbortSignal,
+  finishSignal?: AbortSignal,
 ): Promise<{ file: Blob; start: number; end: number }> {
   if (
     signal.aborted ||
@@ -33,6 +34,7 @@ export async function capture(
         clean();
         reject(new Error("Capture cancelled or audio interrupted."));
       };
+      const finish = () => node!.port.postMessage("stop");
       const timer = setTimeout(
         () => {
           clean();
@@ -47,10 +49,13 @@ export async function capture(
       const clean = () => {
         clearTimeout(timer);
         signal.removeEventListener("abort", fail);
+        finishSignal?.removeEventListener("abort", finish);
         track.removeEventListener("ended", fail);
         track.removeEventListener("mute", fail);
       };
       signal.addEventListener("abort", fail, { once: true });
+      if (finishSignal?.aborted) finish();
+      else finishSignal?.addEventListener("abort", finish, { once: true });
       track.addEventListener("ended", fail, { once: true });
       track.addEventListener("mute", fail, { once: true });
       node!.port.onmessage = (e) => {

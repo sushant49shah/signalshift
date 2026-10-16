@@ -23,6 +23,7 @@ import {
   hash,
   publicSession,
   rateLimit,
+  verificationHistory,
   type Role,
 } from "@/lib/server/store";
 import {
@@ -115,6 +116,14 @@ export async function POST(
         "Session access is invalid or expired. Create a new room.",
       );
     if (action === "status") return response(publicSession(s));
+    if (action === "history") {
+      if (role !== "interviewer")
+        throw new AppError(
+          403,
+          "Only the interviewer can view verification history.",
+        );
+      return response(await verificationHistory(id));
+    }
     if (action === "end" || action === "withdraw") {
       if (action === "withdraw" && role !== "candidate")
         throw new AppError(403, "Only the candidate can withdraw consent.");
@@ -138,6 +147,35 @@ export async function POST(
         .prepare("UPDATE sessions SET cleanup=? WHERE id=?")
         .run(cleanup, id);
       return response({ ended: true, cleanup, roomCleanup });
+    }
+    if (action === "review") {
+      if (role !== "interviewer")
+        throw new AppError(
+          403,
+          "Only the interviewer can record a review action.",
+        );
+      const operationId = z.uuid().parse(input.operationId);
+      const row = (await db()
+        .prepare(
+          "SELECT result FROM operations WHERE id=? AND session=? AND kind='analyze'",
+        )
+        .get(operationId, id)) as { result?: string } | undefined;
+      if (!row?.result)
+        throw new AppError(404, "Verification result not found.");
+      const result = JSON.parse(row.result) as Record<string, unknown>;
+      if (result.outcome === "passed")
+        throw new AppError(
+          409,
+          "Only an unresolved result can be marked for continued review.",
+        );
+      result.humanReview = {
+        action: "continue_with_unresolved_result",
+        at: Date.now(),
+      };
+      await db()
+        .prepare("UPDATE operations SET result=? WHERE id=? AND session=?")
+        .run(JSON.stringify(result), operationId, id);
+      return response(result);
     }
     if (s.ended) throw new AppError(409, "This session has ended.");
     if (action === "consent") {
@@ -186,6 +224,59 @@ export async function POST(
       });
       return response({ token: await access.toJwt(), url });
     }
+    if (action === "incomplete") {
+      if (role !== "interviewer")
+        throw new AppError(
+          403,
+          "Only the interviewer can record verification history.",
+        );
+      if (!s.consent || s.ended)
+        throw new AppError(403, "Active candidate consent is required.");
+      const operationId = z.uuid().parse(input.operationId);
+      const question = z.string().trim().min(1).max(1000).parse(input.question);
+      const captureStart = z.number().finite().parse(input.captureStart);
+      const captureEnd = z.number().finite().parse(input.captureEnd);
+      const reason = z.string().trim().min(1).max(500).parse(input.reason);
+      if (
+        captureStart < s.consent ||
+        captureEnd <= captureStart ||
+        captureEnd - captureStart > 30_000 ||
+        captureEnd > Date.now() + 2000 ||
+        Date.now() - captureEnd > 120_000
+      )
+        throw new AppError(400, "Invalid incomplete capture interval.");
+      const result = {
+        id: operationId,
+        question,
+        captureStart,
+        captureEnd,
+        receivedAt: Date.now(),
+        providerStatus: null,
+        speaker: "unavailable",
+        deepfake: "unavailable",
+        outcome: "incomplete",
+        partialFailure: true,
+        speakerSimilarity: null,
+        speakerThreshold: null,
+        speakerDurationSeconds: null,
+        deepfakeScore: null,
+        deepfakeThreshold: null,
+        deepfakeDurationSeconds: null,
+        deepfakeSegments: [],
+        speakerErrorCode: "not_submitted",
+        speakerErrorMessage: reason,
+        deepfakeErrorCode: "not_submitted",
+        deepfakeErrorMessage: reason,
+        speakerError: "not_submitted",
+        deepfakeError: "not_submitted",
+      };
+      await db()
+        .prepare(
+          "INSERT INTO operations (id,session,kind,digest,result) VALUES (?,?,?,?,?)",
+        )
+        .run(operationId, id, "analyze", "preflight", JSON.stringify(result));
+      return response(result);
+    }
     if (!upload) throw new AppError(404, "Unknown endpoint.");
     if (
       (action === "enroll" && role !== "candidate") ||
@@ -200,6 +291,7 @@ export async function POST(
       "operationId",
       "captureStart",
       "captureEnd",
+      "question",
     ]);
     if (
       [...form!.keys()].some((k) => !allowed.has(k)) ||
@@ -214,6 +306,10 @@ export async function POST(
     const audioInfo = inspectWav(audio, action);
     const captureStart = z.coerce.number().finite().parse(input.captureStart),
       captureEnd = z.coerce.number().finite().parse(input.captureEnd);
+    const question =
+      action === "analyze"
+        ? z.string().trim().min(1).max(1000).parse(input.question)
+        : undefined;
     if (
       captureStart < s.consent ||
       captureEnd > Date.now() + 2000 ||
@@ -345,6 +441,7 @@ export async function POST(
           id: operationId,
           captureStart,
           captureEnd,
+          question,
           receivedAt: Date.now(),
           providerStatus: upstream.status,
         };
@@ -353,6 +450,43 @@ export async function POST(
         .prepare("UPDATE operations SET result=? WHERE id=?")
         .run(JSON.stringify(output), operationId);
       return response(output);
+    } catch (error) {
+      if (action === "analyze") {
+        const status = error instanceof AppError ? error.status : 500;
+        const message =
+          error instanceof AppError
+            ? error.message
+            : "The verification request could not be completed.";
+        const failed = {
+          speaker: "unavailable",
+          deepfake: "unavailable",
+          outcome: "incomplete",
+          partialFailure: true,
+          speakerSimilarity: null,
+          speakerThreshold: null,
+          speakerDurationSeconds: null,
+          deepfakeScore: null,
+          deepfakeThreshold: null,
+          deepfakeDurationSeconds: null,
+          deepfakeSegments: [],
+          speakerErrorCode: "request_failed",
+          speakerErrorMessage: message,
+          deepfakeErrorCode: "request_failed",
+          deepfakeErrorMessage: message,
+          speakerError: "request_failed",
+          deepfakeError: "request_failed",
+          id: operationId,
+          captureStart,
+          captureEnd,
+          question,
+          receivedAt: Date.now(),
+          providerStatus: status,
+        };
+        await db()
+          .prepare("UPDATE operations SET result=? WHERE id=?")
+          .run(JSON.stringify(failed), operationId);
+      }
+      throw error;
     } finally {
       await db()
         .prepare("UPDATE sessions SET busy=0 WHERE id=? AND busy=?")

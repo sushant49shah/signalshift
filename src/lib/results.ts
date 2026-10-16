@@ -5,6 +5,18 @@ export interface AnalysisResult {
   deepfake: Deepfake;
   outcome: "passed" | "concern" | "incomplete";
   partialFailure: boolean;
+  speakerSimilarity: number | null;
+  speakerThreshold: number | null;
+  speakerDurationSeconds: number | null;
+  deepfakeScore: number | null;
+  deepfakeThreshold: number | null;
+  deepfakeDurationSeconds: number | null;
+  deepfakeDecidedBy?: string;
+  deepfakeSegments: Array<{ start: number; end: number; score: number }>;
+  speakerErrorCode?: string;
+  speakerErrorMessage?: string;
+  deepfakeErrorCode?: string;
+  deepfakeErrorMessage?: string;
   speakerError?: string;
   deepfakeError?: string;
   operationId?: string;
@@ -20,6 +32,17 @@ function identifier(value: unknown) {
   return typeof value === "string" && /^[a-zA-Z0-9_-]{1,100}$/.test(value)
     ? value
     : undefined;
+}
+function finite(value: unknown, min: number, max: number): number | null {
+  return typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= min &&
+    value <= max
+    ? value
+    : null;
+}
+function safeText(value: unknown): string | undefined {
+  return typeof value === "string" && value.length <= 500 ? value : undefined;
 }
 export function normalizeAnalysis(
   body: unknown,
@@ -42,12 +65,38 @@ export function normalizeAnalysis(
       df.verdict === "not_sure")
       ? df.verdict
       : "unavailable";
+  const speakerResult = object(result),
+    speakerError = object(b.error),
+    deepfakeError = object(df.error || (!httpOk ? b.error : undefined));
+  const rawSegments = object(df).segments;
   const partialFailure =
     speaker === "unavailable" || deepfake === "unavailable";
   return {
     speaker,
     deepfake,
     partialFailure,
+    speakerSimilarity: finite(speakerResult.similarity, -1, 1),
+    speakerThreshold: finite(speakerResult.threshold, -1, 1),
+    speakerDurationSeconds: finite(speakerResult.duration_seconds, 0, 120),
+    deepfakeScore: finite(object(df).score, 0, 1),
+    deepfakeThreshold: finite(object(df).threshold, 0, 1),
+    deepfakeDurationSeconds: finite(object(df).duration_seconds, 0, 120),
+    deepfakeDecidedBy: safeText(object(df).decided_by),
+    deepfakeSegments: Array.isArray(rawSegments)
+      ? rawSegments.flatMap((value: unknown) => {
+          const segment = object(value),
+            start = finite(segment.start, 0, 120),
+            end = finite(segment.end, 0, 120),
+            score = finite(segment.score, 0, 1);
+          return start !== null && end !== null && score !== null && end > start
+            ? [{ start, end, score }]
+            : [];
+        })
+      : [],
+    speakerErrorCode: safeText(speakerError.code),
+    speakerErrorMessage: safeText(speakerError.message),
+    deepfakeErrorCode: safeText(deepfakeError.code),
+    deepfakeErrorMessage: safeText(deepfakeError.message),
     outcome:
       speaker === "no_match" || deepfake === "fake"
         ? "concern"
