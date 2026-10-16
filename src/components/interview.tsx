@@ -396,26 +396,46 @@ export default function Interview() {
       : room?.remoteParticipants.get("candidate");
   const candidateMic = candidate?.getTrackPublication(Track.Source.Microphone);
   return (
-    <main className="mx-auto max-w-6xl space-y-6 px-5 py-10">
-      <nav>
-        <a href="/test-audio">Test audio without a call →</a>
+    <main className="app-shell mx-auto max-w-6xl space-y-6 px-5 py-10">
+      <nav className="top-nav" aria-label="Main navigation">
+        <a className="brand-lockup" href="/" aria-label="SignalShift AI home">
+          <span className="signal-mark" aria-hidden="true">
+            <i />
+            <i />
+            <i />
+            <i />
+            <i />
+          </span>
+          <span>
+            SignalShift <b>AI</b>
+          </span>
+        </a>
+        <div className="nav-links">
+          <a href="#overview">Overview</a>
+          <a href="#workflow">How it works</a>
+          <a href="/test-audio">Test audio</a>
+          <a className="nav-cta" href={id ? "#workflow" : "#start-session"}>
+            {id ? "Session workflow" : "Get started"}
+          </a>
+        </div>
       </nav>
-      <header className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <p className="text-xs font-bold uppercase tracking-widest text-blue-700">
-            Technical foundation · live provider integration
+      <header
+        className="masthead flex flex-wrap items-start justify-between gap-4"
+        id="overview"
+      >
+        <div className="brand-copy">
+          <p className="eyebrow">
+            TECHNICAL FOUNDATION · LIVE PROVIDER INTEGRATION
           </p>
-          <h1 className="mt-2 text-4xl font-bold tracking-tight">
-            SignalShift AI
+          <h1 className="brand-title">
+            SignalShift <span>AI</span>
           </h1>
-          <p className="mt-2 text-slate-600">
+          <p className="brand-description">
             Voice continuity and synthetic-speech checks for a consented
             interview.
           </p>
         </div>
-        <span className="rounded-full border border-slate-300 px-3 py-2 text-sm">
-          {id ? role : "Two-person room"}
-        </span>
+        <span className="role-badge">{id ? role : "Two-person room"}</span>
       </header>
       {error && (
         <p role="alert" className="error">
@@ -428,29 +448,103 @@ export default function Interview() {
         </p>
       )}
       {!id ? (
-        <section className="panel max-w-xl space-y-5">
-          <h2>Start an interview</h2>
-          <p>
-            Create a room, invite the candidate, enroll their voice, then check
-            one complete audio segment.
-          </p>
-          <label className="block space-y-2">
-            <span>Demo access code (if configured)</span>
-            <input
-              type="password"
-              value={accessCode}
-              onChange={(e) => setAccessCode(e.target.value)}
-              autoComplete="off"
-            />
-          </label>
-          <button disabled={busy || !ready} onClick={create}>
-            Create interview
-          </button>
-          <p className="note">
-            Requires configured LiveKit and DetectifAI accounts. Results apply
-            only to the checked sample and do not establish legal identity.
-          </p>
-        </section>
+        <>
+          <div className="landing-grid">
+            <section
+              className="panel setup-panel max-w-xl space-y-5"
+              id="start-session"
+            >
+              <div className="section-kicker">NEW SESSION</div>
+              <h2>Start an interview</h2>
+              <p>
+                Create a room, invite the candidate, enroll their voice, then
+                check one complete audio segment.
+              </p>
+              <label className="block space-y-2">
+                <span className="field-label">
+                  Demo access code <span>(if configured)</span>
+                </span>
+                <input
+                  type="password"
+                  value={accessCode}
+                  onChange={(e) => setAccessCode(e.target.value)}
+                  autoComplete="off"
+                />
+              </label>
+              <button disabled={busy || !ready} onClick={create}>
+                Create interview
+              </button>
+              <p className="note">
+                Requires configured LiveKit and DetectifAI accounts. Results
+                apply only to the checked sample and do not establish legal
+                identity.
+              </p>
+            </section>
+            <section className="panel steps-panel" id="workflow">
+              <div className="summary-heading">
+                <span className="summary-dot" />
+                <h2>Consent-first workflow</h2>
+                <span className="summary-label">3 steps</span>
+              </div>
+              <p className="note">
+                A clear sequence for both people in the interview.
+              </p>
+              <ol className="steps-list">
+                <li>
+                  <span>01</span>
+                  <div>
+                    <strong>Create a private room</strong>
+                    <p>Invite one candidate using a time-limited link.</p>
+                  </div>
+                </li>
+                <li>
+                  <span>02</span>
+                  <div>
+                    <strong>Enroll with consent</strong>
+                    <p>The candidate records a short voice reference.</p>
+                  </div>
+                </li>
+                <li>
+                  <span>03</span>
+                  <div>
+                    <strong>Check a sample</strong>
+                    <p>The interviewer captures a segment for both checks.</p>
+                  </div>
+                </li>
+              </ol>
+              <div className="sample-note">
+                <strong>Human review stays in control</strong>
+                <p>
+                  Results apply only to the checked sample and never establish
+                  identity or misconduct.
+                </p>
+              </div>
+            </section>
+          </div>
+          <section className="feature-row" aria-label="What SignalShift checks">
+            <article className="feature-card">
+              <span className="feature-icon blue">〰</span>
+              <div>
+                <h3>Voice continuity</h3>
+                <p>Compare a sample with the enrolled reference.</p>
+              </div>
+            </article>
+            <article className="feature-card">
+              <span className="feature-icon violet">✦</span>
+              <div>
+                <h3>Synthetic-speech check</h3>
+                <p>Review the provider’s classification for that sample.</p>
+              </div>
+            </article>
+            <article className="feature-card">
+              <span className="feature-icon green">✓</span>
+              <div>
+                <h3>Consent-first</h3>
+                <p>Candidate consent is required before audio analysis.</p>
+              </div>
+            </article>
+          </section>
+        </>
       ) : (
         <>
           {invitation && (
@@ -516,11 +610,16 @@ export default function Interview() {
               <p className="note">Notice version: 2026-10-16-v1</p>
             </section>
           )}
-          <div className="grid gap-6 lg:grid-cols-[1.5fr_1fr]">
-            <section className="panel space-y-4">
+          <div className="workspace-grid grid gap-6 lg:grid-cols-[1.5fr_1fr]">
+            <section className="panel call-panel space-y-4">
               <div className="flex flex-wrap justify-between gap-2">
                 <h2>Interview room</h2>
-                <span className="note">Call: {connection}</span>
+                <span
+                  className={`connection-badge ${connected ? "is-connected" : ""}`}
+                >
+                  <i />
+                  {connection}
+                </span>
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
                 <Video participant={room?.localParticipant} />
@@ -597,9 +696,17 @@ export default function Interview() {
                 )}
                 <button
                   className="danger"
-                  onClick={() =>
-                    stop(role === "candidate" ? "withdraw" : "end")
-                  }
+                  onClick={() => {
+                    const action = role === "candidate" ? "withdraw" : "end";
+                    const confirmed =
+                      session?.ended ||
+                      window.confirm(
+                        role === "candidate"
+                          ? "End this interview and withdraw consent? Any audio already sent cannot be recalled."
+                          : "End this interview? This disconnects both people and stops further capture and analysis.",
+                      );
+                    if (confirmed) stop(action);
+                  }}
                 >
                   {session?.ended
                     ? "Retry session cleanup"
@@ -618,8 +725,33 @@ export default function Interview() {
                     : "Use headphones to reduce acoustic echo. Keep the recording tab active."}
               </p>
             </section>
-            <section className="panel space-y-4" aria-live="polite">
+            <section
+              className="panel analysis-panel space-y-4"
+              aria-live="polite"
+              id="workflow"
+            >
+              <div className="section-kicker">SESSION WORKFLOW</div>
               <h2>Voice analysis</h2>
+              {session?.ended ? (
+                <div className="workflow-notice is-ended" role="status">
+                  <strong>This interview has ended.</strong>
+                  <p>
+                    Audio capture and analysis are stopped for this room. Start
+                    a new interview to continue.
+                  </p>
+                  <a href="/">Start a new interview →</a>
+                </div>
+              ) : role === "interviewer" && !session?.enrolled ? (
+                <div className="workflow-notice" role="status">
+                  <strong>Waiting for the candidate’s voice reference</strong>
+                  <p>
+                    The candidate must stay connected, finish the 25-second
+                    recording, and receive confirmation that enrollment was
+                    accepted. Then join or reconnect to capture an 8-second
+                    sample.
+                  </p>
+                </div>
+              ) : null}
               <p>
                 Consent:{" "}
                 <strong>
@@ -633,7 +765,13 @@ export default function Interview() {
               <p>
                 Voice reference:{" "}
                 <strong>
-                  {session?.enrolled ? "Accepted by DetectifAI" : "Not ready"}
+                  {session?.enrolled
+                    ? "Accepted by DetectifAI"
+                    : session?.ended
+                      ? "Session ended"
+                      : role === "interviewer"
+                        ? "Waiting for candidate"
+                        : "Not ready"}
                 </strong>
               </p>
               {role === "candidate" ? (
@@ -659,8 +797,9 @@ export default function Interview() {
               ) : (
                 <>
                   <p>
-                    Ask the candidate to speak, then capture one complete
-                    eight-second segment from their remote microphone track.
+                    Once enrollment is accepted and both people are connected,
+                    ask the candidate to speak, then capture one complete
+                    eight-second segment from their microphone.
                   </p>
                   <button
                     disabled={
@@ -676,6 +815,18 @@ export default function Interview() {
                   >
                     Capture & analyze 8 seconds
                   </button>
+                  {!session?.ended && session?.enrolled && !connected && (
+                    <p className="note">
+                      Join the interview room first. Both participants need to
+                      be connected before capture can start.
+                    </p>
+                  )}
+                  {!session?.ended && !session?.enrolled && (
+                    <p className="note">
+                      Capture is locked until the candidate finishes voice
+                      enrollment and the reference is accepted.
+                    </p>
+                  )}
                   <p className="note">
                     Manual sample checks only. Time between samples is not
                     analyzed.
@@ -719,7 +870,7 @@ export default function Interview() {
             </section>
           </div>
           {role === "interviewer" && (
-            <section className="panel space-y-4">
+            <section className="panel results-panel space-y-4">
               <h2>Actual sample results</h2>
               <p className="note">
                 Only a speaker match plus a real-speech verdict passes both
@@ -774,7 +925,7 @@ export default function Interview() {
           )}
         </>
       )}
-      <footer className="note">
+      <footer className="app-footer note">
         Prototype for consented testing. Voice comparison is not proof of
         identity; synthetic-speech classification is not proof of misconduct.
       </footer>
