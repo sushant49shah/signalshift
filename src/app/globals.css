@@ -1,0 +1,131 @@
+@import "tailwindcss";
+:root {
+  color-scheme: light;
+  font-family: Arial, Helvetica, sans-serif;
+  background: #f2f5fa;
+  color: #17243a;
+}
+body {
+  margin: 0;
+}
+button,
+input {
+  font: inherit;
+}
+button {
+  cursor: pointer;
+  min-height: 44px;
+  padding: 10px 17px;
+  background: #213f89;
+  color: white;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  font-weight: 600;
+}
+button:hover {
+  background: #162f6e;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+button.secondary {
+  background: white;
+  color: #243c68;
+  border-color: #c4cfdf;
+}
+button.danger {
+  background: #8b2937;
+}
+a {
+  color: #234caf;
+  overflow-wrap: anywhere;
+}
+input[type="text"],
+input[type="password"] {
+  padding: 12px;
+  border: 1px solid #bcc9dc;
+  border-radius: 8px;
+  width: 100%;
+}
+input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  vertical-align: middle;
+  margin-right: 10px;
+}
+:focus-visible {
+  outline: 3px solid #6c92f5;
+  outline-offset: 3px;
+}
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+h2 {
+  font-size: 22px;
+  font-weight: 700;
+}
+h3 {
+  font-size: 17px;
+  font-weight: 700;
+}
+p {
+  line-height: 1.6;
+}
+.panel {
+  background: white;
+  border: 1px solid #dbe2ed;
+  border-radius: 16px;
+  padding: 24px;
+}
+.note {
+  color: #52647d;
+  font-size: 14px;
+}
+.error {
+  color: #832938;
+  background: #fff1f2;
+  padding: 14px;
+  border-radius: 8px;
+}
+.tile {
+  background: #101e34;
+  aspect-ratio: 16/10;
+  border-radius: 12px;
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #d2dced;
+}
+.tile video {
+  height: 100%;
+  width: 100%;
+  object-fit: cover;
+}
+.tile span {
+  position: absolute;
+  bottom: 10px;
+  left: 10px;
+  background: #101e34ce;
+  padding: 5px 9px;
+  border-radius: 5px;
+}
+.result {
+  border-left: 4px solid #8d9bb2;
+  padding: 16px;
+  background: #f4f6fa;
+}
+.result[data-outcome="passed"] {
+  border-color: #327b61;
+}
+.result[data-outcome="concern"] {
+  border-color: #b36b19;
+}
+.result[data-outcome="incomplete"] {
+  border-color: #8b6b2c;
+}
