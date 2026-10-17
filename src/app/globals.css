@@ -754,6 +754,252 @@ p {
   margin-top: 12px;
 }
 
+.overview-heading,
+.results-title-row,
+.question-manager-heading,
+.review-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.overview-heading h2,
+.results-title-row h2 {
+  margin-top: 5px;
+}
+.overview-grid,
+.report-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+.overview-grid p,
+.report-summary p {
+  display: grid;
+  gap: 4px;
+  padding: 13px;
+  border: 1px solid #e1e8f1;
+  border-radius: 9px;
+  background: #f8fafe;
+  font-size: 13px;
+}
+.overview-grid span {
+  color: #64758d;
+}
+.candidate-interview-info,
+.recheck-notice,
+.requires-review,
+.human-review-panel,
+.interview-report {
+  padding: 16px;
+  border: 1px solid #dce6f3;
+  border-radius: 10px;
+  background: #f8fafe;
+}
+.candidate-interview-info {
+  display: grid;
+  gap: 11px;
+}
+.recheck-notice {
+  border-color: #c7d9f5;
+  background: #eef5ff;
+}
+.capture-status {
+  color: #53657d;
+  font-size: 14px;
+}
+.recording-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #9b3d3b;
+  font-size: 13px;
+  font-weight: 700;
+}
+.recording-indicator i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #c94d47;
+}
+.enrollment-status {
+  display: grid;
+  gap: 7px;
+  color: #53657d;
+  font-size: 13px;
+}
+.enrollment-status progress {
+  width: 100%;
+  height: 9px;
+  accent-color: #1760dc;
+}
+.question-manager {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+.compact-button {
+  min-height: 34px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.question-tabs {
+  display: flex;
+  gap: 7px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.question-tab {
+  display: grid;
+  min-width: 108px;
+  min-height: 48px;
+  padding: 8px 10px;
+  border-color: #d6dfeb;
+  background: #fff;
+  color: #405673;
+  text-align: left;
+}
+.question-tab:hover,
+.question-tab.is-current {
+  border-color: #1760dc;
+  background: #edf4ff;
+  color: #174fa9;
+}
+.question-tab small {
+  font-size: 10px;
+  font-weight: 500;
+}
+.question-edit-actions,
+.review-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.question-edit-actions button,
+.review-buttons button {
+  min-height: 38px;
+  padding: 8px 12px;
+}
+.requires-review {
+  display: grid;
+  gap: 10px;
+  border-color: #ead9bd;
+  background: #fffaf1;
+}
+.review-summary {
+  align-items: flex-end;
+  padding-top: 10px;
+  border-top: 1px solid #eadfce;
+}
+.review-summary p {
+  margin-top: 3px;
+  font-size: 13px;
+}
+.review-summary small {
+  color: #7a684e;
+}
+.result-heading-detail {
+  color: #53657d;
+  font-weight: 500;
+}
+.evidence-details > summary {
+  color: #205dc4;
+  cursor: pointer;
+  font-weight: 700;
+}
+.evidence-details > .technical-checks {
+  margin-top: 12px;
+}
+.human-review-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+.human-review-panel textarea {
+  min-height: 64px;
+}
+.interview-report {
+  display: grid;
+  gap: 16px;
+  margin-top: 24px;
+  border-color: #cfddec;
+  background: #fff;
+}
+.report-questions {
+  display: grid;
+  gap: 10px;
+}
+.report-final-review {
+  display: grid;
+  gap: 7px;
+  padding: 14px;
+  border: 1px solid #e1e8f1;
+  border-radius: 8px;
+  background: #f8fafe;
+}
+.report-questions article {
+  padding: 13px;
+  border: 1px solid #e1e8f1;
+  border-radius: 8px;
+}
+.report-questions p {
+  margin-top: 6px;
+  color: #566981;
+  font-size: 13px;
+}
+.report-disclaimer {
+  padding: 13px;
+  border-left: 3px solid #1760dc;
+  background: #eef5ff;
+  color: #3e5574;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+@media (max-width: 700px) {
+  .overview-grid,
+  .report-summary {
+    grid-template-columns: 1fr 1fr;
+  }
+  .overview-heading,
+  .results-title-row,
+  .review-summary {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+@media print {
+  .top-nav,
+  .interview-overview,
+  .interview-workspace,
+  .results-panel > .note,
+  .results-panel > .requires-review,
+  .results-panel > .result,
+  .results-title-row > button,
+  .app-footer {
+    display: none !important;
+  }
+  body,
+  .panel,
+  .interview-report {
+    background: #fff !important;
+    box-shadow: none !important;
+  }
+  .results-panel {
+    padding: 0;
+    border: 0;
+  }
+  .results-panel > .results-title-row {
+    display: none;
+  }
+  .interview-report {
+    display: grid !important;
+    border: 0;
+  }
+}
+
 /* Standalone audio page shares the same quiet, practical visual language. */
 main.mx-auto.max-w-3xl {
   max-width: 780px;

@@ -26,7 +26,12 @@ let initialized: Promise<void> | undefined;
 const schema = `
 CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, interviewer TEXT, candidate TEXT, expires INTEGER, consent INTEGER, notice TEXT, ended INTEGER DEFAULT 0, speaker TEXT, enrolled INTEGER DEFAULT 0, busy INTEGER DEFAULT 0, cleanup TEXT);
 CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, session TEXT, kind TEXT, digest TEXT, result TEXT);
-CREATE TABLE IF NOT EXISTS limits (bucket TEXT PRIMARY KEY, count INTEGER, expires INTEGER);`;
+CREATE TABLE IF NOT EXISTS limits (bucket TEXT PRIMARY KEY, count INTEGER, expires INTEGER);
+CREATE TABLE IF NOT EXISTS questions (id TEXT PRIMARY KEY, session TEXT NOT NULL, position INTEGER NOT NULL, text TEXT NOT NULL, created INTEGER NOT NULL);
+CREATE UNIQUE INDEX IF NOT EXISTS questions_session_position ON questions(session, position);
+CREATE TABLE IF NOT EXISTS interview_state (session TEXT PRIMARY KEY, current_question TEXT, capture_status TEXT NOT NULL DEFAULT 'waiting', capture_started INTEGER, recheck_question TEXT, recheck_operation TEXT, recheck_requested INTEGER);
+CREATE TABLE IF NOT EXISTS interview_timeline (session TEXT PRIMARY KEY, started INTEGER NOT NULL, ended INTEGER);
+CREATE TABLE IF NOT EXISTS reviews (id TEXT PRIMARY KEY, session TEXT NOT NULL, question TEXT NOT NULL, operation TEXT NOT NULL, decision TEXT NOT NULL, notes TEXT NOT NULL, created INTEGER NOT NULL);`;
 async function execute(sql: string, args: Value[]) {
   if (process.env.TURSO_DATABASE_URL) {
     if (!process.env.TURSO_AUTH_TOKEN)
@@ -98,6 +103,26 @@ export async function createSession() {
       hash(candidate),
       Date.now() + 2 * 60 * 60 * 1000,
     );
+  const questionId = randomUUID();
+  await db()
+    .prepare(
+      "INSERT INTO questions (id,session,position,text,created) VALUES (?,?,?,?,?)",
+    )
+    .run(
+      questionId,
+      id,
+      1,
+      "Tell me about a recent project you worked on.",
+      Date.now(),
+    );
+  await db()
+    .prepare(
+      "INSERT INTO interview_state (session,current_question) VALUES (?,?)",
+    )
+    .run(id, questionId);
+  await db()
+    .prepare("INSERT INTO interview_timeline (session,started) VALUES (?,?)")
+    .run(id, Date.now());
   return { id, interviewer, candidate };
 }
 export async function getSession(id: string): Promise<Session | undefined> {
@@ -150,6 +175,84 @@ export async function verificationHistory(id: string) {
       return [];
     }
   });
+}
+export interface InterviewQuestion {
+  id: string;
+  position: number;
+  text: string;
+  created: number;
+}
+export interface InterviewState {
+  current_question: string | null;
+  capture_status: string;
+  capture_started: number | null;
+  recheck_question: string | null;
+  recheck_operation: string | null;
+  recheck_requested: number | null;
+}
+export async function ensureInterviewWorkspace(id: string) {
+  let questions = await interviewQuestions(id);
+  if (!questions.length) {
+    const questionId = randomUUID();
+    await db()
+      .prepare(
+        "INSERT INTO questions (id,session,position,text,created) VALUES (?,?,?,?,?)",
+      )
+      .run(
+        questionId,
+        id,
+        1,
+        "Tell me about a recent project you worked on.",
+        Date.now(),
+      );
+    questions = await interviewQuestions(id);
+  }
+  await db()
+    .prepare(
+      "INSERT OR IGNORE INTO interview_state (session,current_question) VALUES (?,?)",
+    )
+    .run(id, questions[0].id);
+  await db()
+    .prepare(
+      "INSERT OR IGNORE INTO interview_timeline (session,started) VALUES (?,?)",
+    )
+    .run(id, questions[0].created);
+}
+export async function interviewQuestions(id: string) {
+  return (await db()
+    .prepare(
+      "SELECT id,position,text,created FROM questions WHERE session=? ORDER BY position ASC",
+    )
+    .all(id)) as unknown as InterviewQuestion[];
+}
+export async function interviewState(id: string): Promise<InterviewState> {
+  const row = (await db()
+    .prepare(
+      "SELECT current_question,capture_status,capture_started,recheck_question,recheck_operation,recheck_requested FROM interview_state WHERE session=?",
+    )
+    .get(id)) as unknown as InterviewState | undefined;
+  return (
+    row || {
+      current_question: null,
+      capture_status: "waiting",
+      capture_started: null,
+      recheck_question: null,
+      recheck_operation: null,
+      recheck_requested: null,
+    }
+  );
+}
+export async function reviewHistory(id: string) {
+  return db()
+    .prepare(
+      "SELECT id,question,operation,decision,notes,created FROM reviews WHERE session=? ORDER BY created ASC",
+    )
+    .all(id);
+}
+export async function interviewTimeline(id: string) {
+  return (await db()
+    .prepare("SELECT started,ended FROM interview_timeline WHERE session=?")
+    .get(id)) as { started: number; ended: number | null };
 }
 export async function active(s: Session) {
   const current = await getSession(s.id);

@@ -19,10 +19,15 @@ import {
   claim,
   createSession,
   db,
+  ensureInterviewWorkspace,
   getSession,
   hash,
+  interviewQuestions,
+  interviewState,
+  interviewTimeline,
   publicSession,
   rateLimit,
+  reviewHistory,
   verificationHistory,
   type Role,
 } from "@/lib/server/store";
@@ -116,6 +121,27 @@ export async function POST(
         "Session access is invalid or expired. Create a new room.",
       );
     if (action === "status") return response(publicSession(s));
+    if (action === "workspace") {
+      await ensureInterviewWorkspace(id);
+      const [questions, state, timeline, history, reviews] = await Promise.all([
+        interviewQuestions(id),
+        interviewState(id),
+        interviewTimeline(id),
+        role === "interviewer" ? verificationHistory(id) : Promise.resolve([]),
+        role === "interviewer" ? reviewHistory(id) : Promise.resolve([]),
+      ]);
+      return response({
+        session: {
+          ...publicSession(s),
+          started: timeline.started,
+          endedAt: timeline.ended,
+        },
+        questions,
+        state,
+        history,
+        reviews,
+      });
+    }
     if (action === "history") {
       if (role !== "interviewer")
         throw new AppError(
@@ -133,6 +159,11 @@ export async function POST(
           "UPDATE sessions SET consent=NULL,enrolled=0,ended=1 WHERE id=?",
         )
         .run(id);
+      await db()
+        .prepare(
+          "UPDATE interview_timeline SET ended=COALESCE(ended,?) WHERE session=?",
+        )
+        .run(Date.now(), id);
       let roomCleanup = "Call room closure not confirmed.";
       try {
         await mediaService().deleteRoom("ss-" + id);
@@ -148,12 +179,74 @@ export async function POST(
         .run(cleanup, id);
       return response({ ended: true, cleanup, roomCleanup });
     }
-    if (action === "review") {
+    if (action === "question/add") {
+      if (role !== "interviewer")
+        throw new AppError(403, "Only the interviewer can manage questions.");
+      const text = z.string().trim().min(1).max(1000).parse(input.text);
+      const count = (await db()
+        .prepare("SELECT COUNT(*) AS count FROM questions WHERE session=?")
+        .get(id)) as { count: number };
+      if (count.count >= 25)
+        throw new AppError(409, "This interview already has 25 questions.");
+      const questionId = randomUUID();
+      await db()
+        .prepare(
+          "INSERT INTO questions (id,session,position,text,created) VALUES (?,?,?,?,?)",
+        )
+        .run(questionId, id, count.count + 1, text, Date.now());
+      return response({ id: questionId, position: count.count + 1, text });
+    }
+    if (action === "question/edit" || action === "question/select") {
+      if (role !== "interviewer")
+        throw new AppError(403, "Only the interviewer can manage questions.");
+      const questionId = z.uuid().parse(input.questionId);
+      const found = await db()
+        .prepare("SELECT id FROM questions WHERE id=? AND session=?")
+        .get(questionId, id);
+      if (!found) throw new AppError(404, "Interview question not found.");
+      if (action === "question/edit") {
+        const text = z.string().trim().min(1).max(1000).parse(input.text);
+        await db()
+          .prepare("UPDATE questions SET text=? WHERE id=? AND session=?")
+          .run(text, questionId, id);
+      } else {
+        await db()
+          .prepare(
+            "UPDATE interview_state SET current_question=? WHERE session=?",
+          )
+          .run(questionId, id);
+      }
+      return response({ saved: true });
+    }
+    if (action === "capture/status") {
       if (role !== "interviewer")
         throw new AppError(
           403,
-          "Only the interviewer can record a review action.",
+          "Only the interviewer controls answer capture.",
         );
+      const status = z
+        .enum(["waiting", "recording", "processing", "completed", "failed"])
+        .parse(input.status);
+      const questionId = z.uuid().parse(input.questionId);
+      const found = await db()
+        .prepare("SELECT id FROM questions WHERE id=? AND session=?")
+        .get(questionId, id);
+      if (!found) throw new AppError(404, "Interview question not found.");
+      await db()
+        .prepare(
+          "UPDATE interview_state SET current_question=?,capture_status=?,capture_started=? WHERE session=?",
+        )
+        .run(
+          questionId,
+          status,
+          status === "recording" ? Date.now() : null,
+          id,
+        );
+      return response({ saved: true });
+    }
+    if (action === "recheck") {
+      if (role !== "interviewer")
+        throw new AppError(403, "Only the interviewer can request a recheck.");
       const operationId = z.uuid().parse(input.operationId);
       const row = (await db()
         .prepare(
@@ -164,18 +257,71 @@ export async function POST(
         throw new AppError(404, "Verification result not found.");
       const result = JSON.parse(row.result) as Record<string, unknown>;
       if (result.outcome === "passed")
+        throw new AppError(409, "A passed result does not require a recheck.");
+      const questionId = z.uuid().parse(result.questionId);
+      const state = await interviewState(id);
+      if (state.recheck_operation)
+        throw new AppError(409, "A recheck request is already active.");
+      await db()
+        .prepare(
+          "UPDATE interview_state SET current_question=?,capture_status='waiting',capture_started=NULL,recheck_question=?,recheck_operation=?,recheck_requested=? WHERE session=?",
+        )
+        .run(questionId, questionId, operationId, Date.now(), id);
+      return response({ requested: true });
+    }
+    if (action === "review") {
+      if (role !== "interviewer")
         throw new AppError(
-          409,
-          "Only an unresolved result can be marked for continued review.",
+          403,
+          "Only the interviewer can record a review decision.",
         );
-      result.humanReview = {
-        action: "continue_with_unresolved_result",
-        at: Date.now(),
+      const operationId = z.uuid().parse(input.operationId);
+      const questionId = z.uuid().parse(input.questionId);
+      const decision = z
+        .enum([
+          "pending_review",
+          "concern_resolved",
+          "further_verification_required",
+          "escalated_manual_review",
+        ])
+        .parse(input.decision);
+      const notes = z
+        .string()
+        .trim()
+        .max(1000)
+        .parse(input.notes ?? "");
+      const row = await db()
+        .prepare(
+          "SELECT id FROM operations WHERE id=? AND session=? AND kind='analyze'",
+        )
+        .get(operationId, id);
+      const question = await db()
+        .prepare("SELECT id FROM questions WHERE id=? AND session=?")
+        .get(questionId, id);
+      if (!row || !question)
+        throw new AppError(404, "Verification result or question not found.");
+      const review = {
+        id: randomUUID(),
+        question: questionId,
+        operation: operationId,
+        decision,
+        notes,
+        created: Date.now(),
       };
       await db()
-        .prepare("UPDATE operations SET result=? WHERE id=? AND session=?")
-        .run(JSON.stringify(result), operationId, id);
-      return response(result);
+        .prepare(
+          "INSERT INTO reviews (id,session,question,operation,decision,notes,created) VALUES (?,?,?,?,?,?,?)",
+        )
+        .run(
+          review.id,
+          id,
+          questionId,
+          operationId,
+          decision,
+          notes,
+          review.created,
+        );
+      return response(review);
     }
     if (s.ended) throw new AppError(409, "This session has ended.");
     if (action === "consent") {
@@ -233,7 +379,13 @@ export async function POST(
       if (!s.consent || s.ended)
         throw new AppError(403, "Active candidate consent is required.");
       const operationId = z.uuid().parse(input.operationId);
-      const question = z.string().trim().min(1).max(1000).parse(input.question);
+      const questionId = z.uuid().parse(input.questionId);
+      const questionRow = (await db()
+        .prepare("SELECT text FROM questions WHERE id=? AND session=?")
+        .get(questionId, id)) as { text: string } | undefined;
+      if (!questionRow)
+        throw new AppError(404, "Interview question not found.");
+      const question = questionRow.text;
       const captureStart = z.number().finite().parse(input.captureStart);
       const captureEnd = z.number().finite().parse(input.captureEnd);
       const reason = z.string().trim().min(1).max(500).parse(input.reason);
@@ -247,6 +399,12 @@ export async function POST(
         throw new AppError(400, "Invalid incomplete capture interval.");
       const result = {
         id: operationId,
+        questionId,
+        attemptNumber:
+          (await verificationHistory(id)).filter(
+            (item: { questionId?: string }) => item.questionId === questionId,
+          ).length + 1,
+        recheckOf: typeof input.recheckOf === "string" ? input.recheckOf : null,
         question,
         captureStart,
         captureEnd,
@@ -275,6 +433,11 @@ export async function POST(
           "INSERT INTO operations (id,session,kind,digest,result) VALUES (?,?,?,?,?)",
         )
         .run(operationId, id, "analyze", "preflight", JSON.stringify(result));
+      await db()
+        .prepare(
+          "UPDATE interview_state SET capture_status='failed',capture_started=NULL WHERE session=?",
+        )
+        .run(id);
       return response(result);
     }
     if (!upload) throw new AppError(404, "Unknown endpoint.");
@@ -292,6 +455,8 @@ export async function POST(
       "captureStart",
       "captureEnd",
       "question",
+      "questionId",
+      "recheckOf",
     ]);
     if (
       [...form!.keys()].some((k) => !allowed.has(k)) ||
@@ -306,10 +471,27 @@ export async function POST(
     const audioInfo = inspectWav(audio, action);
     const captureStart = z.coerce.number().finite().parse(input.captureStart),
       captureEnd = z.coerce.number().finite().parse(input.captureEnd);
-    const question =
-      action === "analyze"
-        ? z.string().trim().min(1).max(1000).parse(input.question)
-        : undefined;
+    let question: string | undefined;
+    let questionId: string | undefined;
+    let recheckOf: string | null = null;
+    let attemptNumber: number | undefined;
+    if (action === "analyze") {
+      questionId = z.uuid().parse(input.questionId);
+      const questionRow = (await db()
+        .prepare("SELECT text FROM questions WHERE id=? AND session=?")
+        .get(questionId, id)) as { text: string } | undefined;
+      if (!questionRow)
+        throw new AppError(404, "Interview question not found.");
+      question = questionRow.text;
+      const history = await verificationHistory(id);
+      attemptNumber =
+        history.filter(
+          (item: { questionId?: string }) => item.questionId === questionId,
+        ).length + 1;
+      const state = await interviewState(id);
+      recheckOf =
+        state.recheck_question === questionId ? state.recheck_operation : null;
+    }
     if (
       captureStart < s.consent ||
       captureEnd > Date.now() + 2000 ||
@@ -442,6 +624,9 @@ export async function POST(
           captureStart,
           captureEnd,
           question,
+          questionId,
+          attemptNumber,
+          recheckOf,
           receivedAt: Date.now(),
           providerStatus: upstream.status,
         };
@@ -449,6 +634,12 @@ export async function POST(
       await db()
         .prepare("UPDATE operations SET result=? WHERE id=?")
         .run(JSON.stringify(output), operationId);
+      if (action === "analyze")
+        await db()
+          .prepare(
+            "UPDATE interview_state SET capture_status='completed',capture_started=NULL,recheck_question=NULL,recheck_operation=NULL,recheck_requested=NULL WHERE session=?",
+          )
+          .run(id);
       return response(output);
     } catch (error) {
       if (action === "analyze") {
@@ -479,12 +670,20 @@ export async function POST(
           captureStart,
           captureEnd,
           question,
+          questionId,
+          attemptNumber,
+          recheckOf,
           receivedAt: Date.now(),
           providerStatus: status,
         };
         await db()
           .prepare("UPDATE operations SET result=? WHERE id=?")
           .run(JSON.stringify(failed), operationId);
+        await db()
+          .prepare(
+            "UPDATE interview_state SET capture_status='failed',capture_started=NULL WHERE session=?",
+          )
+          .run(id);
       }
       throw error;
     } finally {

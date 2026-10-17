@@ -21,6 +21,26 @@ type Session = {
   cleanup: string | null;
   expires: number;
   serverTime: number;
+  started?: number;
+  endedAt?: number | null;
+};
+type Question = { id: string; position: number; text: string; created: number };
+type InterviewState = {
+  current_question: string | null;
+  capture_status:
+    "waiting" | "recording" | "processing" | "completed" | "failed";
+  capture_started: number | null;
+  recheck_question: string | null;
+  recheck_operation: string | null;
+  recheck_requested: number | null;
+};
+type Review = {
+  id: string;
+  question: string;
+  operation: string;
+  decision: string;
+  notes: string;
+  created: number;
 };
 type Result = AnalysisResult & {
   id: string;
@@ -29,7 +49,9 @@ type Result = AnalysisResult & {
   question: string;
   receivedAt: number;
   providerStatus: number | null;
-  humanReview?: { action: string; at: number };
+  questionId?: string;
+  attemptNumber?: number;
+  recheckOf?: string | null;
 };
 function candidateError(error: unknown) {
   const text = error instanceof Error ? error.message.toLowerCase() : "";
@@ -124,16 +146,23 @@ export default function Interview() {
     [, redraw] = useState(0);
   const [results, setResults] = useState<Result[]>([]),
     [ready, setReady] = useState(false);
+  const [questions, setQuestions] = useState<Question[]>([]);
+  const [interviewState, setInterviewState] = useState<InterviewState | null>(
+    null,
+  );
+  const [reviews, setReviews] = useState<Review[]>([]);
   const [analysisError, setAnalysisError] = useState("");
   const [question, setQuestion] = useState(
     "Tell me about a recent project you worked on.",
   );
   const [captureLimit, setCaptureLimit] = useState(30);
   const [reviewBusy, setReviewBusy] = useState("");
+  const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
   const roomRef = useRef<Room | null>(null),
     operation = useRef<AbortController | null>(null),
     finishCapture = useRef<AbortController | null>(null),
     sessionRef = useRef<Session | null>(null),
+    selectedQuestionRef = useRef<string | null>(null),
     processing = useRef(false);
   const clockOffset = useRef(0);
   sessionRef.current = session;
@@ -181,10 +210,24 @@ export default function Interview() {
     let stopped = false;
     async function refresh() {
       try {
-        const s = await api("status", { id, role });
+        const workspace = await api("workspace", { id, role });
+        const s = workspace.session as Session;
         if (stopped) return;
         clockOffset.current = s.serverTime - Date.now();
         setSession(s);
+        setQuestions(workspace.questions);
+        setInterviewState(workspace.state);
+        if (role === "interviewer") {
+          setResults(workspace.history);
+          setReviews(workspace.reviews);
+        }
+        const selected = (workspace.questions as Question[]).find(
+          (item) => item.id === workspace.state.current_question,
+        );
+        if (selected && selectedQuestionRef.current !== selected.id) {
+          selectedQuestionRef.current = selected.id;
+          setQuestion(selected.text);
+        }
         if (s.ended) {
           cancel();
           void roomRef.current?.disconnect();
@@ -208,25 +251,6 @@ export default function Interview() {
     }
     void refresh();
     const timer = setInterval(refresh, 1000);
-    return () => {
-      stopped = true;
-      clearInterval(timer);
-    };
-  }, [id, role, ready]);
-  useEffect(() => {
-    if (!id || !ready || role !== "interviewer") return;
-    let stopped = false;
-    const refreshHistory = () => {
-      api("history", { id, role })
-        .then((history: Result[]) => {
-          if (!stopped) setResults(history);
-        })
-        .catch(() => {
-          // Keep the last known dashboard history visible during a transient error.
-        });
-    };
-    refreshHistory();
-    const timer = setInterval(refreshHistory, 5000);
     return () => {
       stopped = true;
       clearInterval(timer);
@@ -334,11 +358,16 @@ export default function Interview() {
   }
   async function record(kind: "enroll" | "analyze") {
     const answerQuestion = question.trim();
+    const questionId = interviewState?.current_question;
     await run(async () => {
       setAnalysisError("");
       if (kind === "analyze" && !answerQuestion)
         throw new Error(
           "Add the interview question before capturing an answer.",
+        );
+      if (kind === "analyze" && !questionId)
+        throw new Error(
+          "Select an interview question before capturing an answer.",
         );
       if (
         kind === "analyze" &&
@@ -375,6 +404,13 @@ export default function Interview() {
       finishCapture.current = stopController ?? null;
       const seconds = kind === "enroll" ? 25 : captureLimit;
       setElapsed(0);
+      if (kind === "analyze")
+        await api("capture/status", {
+          id,
+          role,
+          questionId,
+          status: "recording",
+        });
       setPhase(
         kind === "enroll"
           ? "Recording your voice sample"
@@ -411,6 +447,13 @@ export default function Interview() {
             ? "Preparing your voice check…"
             : "Uploading the answer for verification…",
         );
+        if (kind === "analyze")
+          await api("capture/status", {
+            id,
+            role,
+            questionId,
+            status: "processing",
+          });
         const form = new FormData();
         form.set("id", id);
         form.set("role", role);
@@ -418,7 +461,12 @@ export default function Interview() {
         form.set("operationId", crypto.randomUUID());
         form.set("captureStart", String(capturedInterval.start));
         form.set("captureEnd", String(capturedInterval.end));
-        if (kind === "analyze") form.set("question", answerQuestion);
+        if (kind === "analyze") {
+          form.set("question", answerQuestion);
+          form.set("questionId", questionId!);
+          if (interviewState?.recheck_operation)
+            form.set("recheckOf", interviewState.recheck_operation);
+        }
         uploadStarted = true;
         const result = await api(kind, form, controller.signal);
         if (controller.signal.aborted || sessionRef.current?.ended) return;
@@ -429,6 +477,13 @@ export default function Interview() {
           );
         } else setResults((previous) => [...previous, result]);
       } catch (e) {
+        if (kind === "analyze" && questionId && !sessionRef.current?.ended)
+          void api("capture/status", {
+            id,
+            role,
+            questionId,
+            status: "failed",
+          }).catch(() => undefined);
         if (
           kind === "analyze" &&
           role === "interviewer" &&
@@ -442,6 +497,8 @@ export default function Interview() {
               role,
               operationId: crypto.randomUUID(),
               question: answerQuestion,
+              questionId,
+              recheckOf: interviewState?.recheck_operation,
               captureStart: capturedInterval.start,
               captureEnd: capturedInterval.end,
               reason:
@@ -512,26 +569,86 @@ export default function Interview() {
       );
     }
   }
-  async function markConcernContinued(result: Result) {
+  async function refreshWorkspace() {
+    const workspace = await api("workspace", { id, role });
+    setSession(workspace.session);
+    setQuestions(workspace.questions);
+    setInterviewState(workspace.state);
+    if (role === "interviewer") {
+      setResults(workspace.history);
+      setReviews(workspace.reviews);
+    }
+  }
+  async function addQuestion() {
+    const created = await api("question/add", {
+      id,
+      role,
+      text: "New interview question",
+    });
+    await api("question/select", { id, role, questionId: created.id });
+    setQuestion(created.text);
+    await refreshWorkspace();
+  }
+  async function saveQuestion() {
+    if (!interviewState?.current_question) return;
+    await api("question/edit", {
+      id,
+      role,
+      questionId: interviewState.current_question,
+      text: question.trim(),
+    });
+    await refreshWorkspace();
+  }
+  async function selectQuestion(item: Question) {
+    await api("question/select", { id, role, questionId: item.id });
+    selectedQuestionRef.current = item.id;
+    setQuestion(item.text);
+    await refreshWorkspace();
+  }
+  async function requestRecheck(result: Result) {
     setReviewBusy(result.id);
     try {
-      const updated = await api("review", {
+      await api("recheck", {
         id,
         role,
         operationId: result.id,
       });
-      setResults((current) =>
-        current.map((item) => (item.id === result.id ? updated : item)),
-      );
+      await refreshWorkspace();
+      document.getElementById("answer-capture")?.scrollIntoView();
     } catch (e) {
       setError(
-        e instanceof Error ? e.message : "Could not save the review action.",
+        e instanceof Error ? e.message : "Could not request a fair recheck.",
+      );
+    } finally {
+      setReviewBusy("");
+    }
+  }
+  async function saveReview(result: Result, decision: string) {
+    if (!result.questionId) return;
+    setReviewBusy(result.id);
+    try {
+      await api("review", {
+        id,
+        role,
+        operationId: result.id,
+        questionId: result.questionId,
+        decision,
+        notes: reviewNotes[result.id] || "",
+      });
+      await refreshWorkspace();
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : "Could not save the review decision.",
       );
     } finally {
       setReviewBusy("");
     }
   }
   function repeatQuestion(result: Result) {
+    const item = questions.find(
+      (candidate) => candidate.id === result.questionId,
+    );
+    if (item) void run(() => selectQuestion(item));
     setQuestion(result.question);
     setAnalysisError("");
     document.getElementById("answer-capture")?.scrollIntoView();
@@ -543,6 +660,21 @@ export default function Interview() {
       ? room?.localParticipant
       : room?.remoteParticipants.get("candidate");
   const candidateMic = candidate?.getTrackPublication(Track.Source.Microphone);
+  const currentQuestion = questions.find(
+    (item) => item.id === interviewState?.current_question,
+  );
+  const reviewRequired = results.filter((item) => item.outcome !== "passed");
+  const answeredQuestionIds = new Set(results.map((item) => item.questionId));
+  const latestReview = (operation: string) =>
+    [...reviews].reverse().find((item) => item.operation === operation);
+  const interviewStarted = session?.started || questions[0]?.created;
+  const interviewFinished = session?.endedAt || Date.now();
+  const interviewMinutes = interviewStarted
+    ? Math.max(1, Math.round((interviewFinished - interviewStarted) / 60_000))
+    : null;
+  const outstandingConcerns = reviewRequired.filter(
+    (item) => latestReview(item.id)?.decision !== "concern_resolved",
+  ).length;
   return (
     <main
       className={`app-shell mx-auto max-w-6xl space-y-6 px-5 py-10 ${role === "interviewer" ? "interviewer-shell" : ""}`}
@@ -814,6 +946,54 @@ export default function Interview() {
               </div>
             </section>
           )}
+          {role === "interviewer" && (
+            <section
+              className="panel interview-overview"
+              aria-label="Interview overview"
+            >
+              <div className="overview-heading">
+                <div>
+                  <p className="section-kicker">INTERVIEW OVERVIEW</p>
+                  <h2>
+                    {session?.ended
+                      ? "Interview ended"
+                      : "Interview in progress"}
+                  </h2>
+                </div>
+                <span className="outcome-tag">Session {id.slice(0, 8)}</span>
+              </div>
+              <div className="overview-grid">
+                <p>
+                  <span>Candidate</span>
+                  <strong>candidate</strong>
+                </p>
+                <p>
+                  <span>Consent</span>
+                  <strong>{session?.consent ? "Granted" : "Awaiting"}</strong>
+                </p>
+                <p>
+                  <span>Voice enrollment</span>
+                  <strong>{session?.enrolled ? "Complete" : "Pending"}</strong>
+                </p>
+                <p>
+                  <span>Questions completed</span>
+                  <strong>
+                    {answeredQuestionIds.size} / {questions.length}
+                  </strong>
+                </p>
+                <p>
+                  <span>Verified answers</span>
+                  <strong>
+                    {results.filter((item) => item.outcome === "passed").length}
+                  </strong>
+                </p>
+                <p>
+                  <span>Requires review</span>
+                  <strong>{reviewRequired.length}</strong>
+                </p>
+              </div>
+            </section>
+          )}
           <div className="workspace-grid grid gap-6 lg:grid-cols-[1.5fr_1fr] interview-workspace">
             <section className="panel call-panel space-y-4 candidate-call-panel">
               <div className="flex flex-wrap justify-between gap-2">
@@ -941,6 +1121,42 @@ export default function Interview() {
               <h2>
                 {role === "candidate" ? "Your interview" : "Candidate answer"}
               </h2>
+              {role === "candidate" && currentQuestion && (
+                <div className="candidate-interview-info">
+                  <span className="candidate-prompt-tag">
+                    Question {currentQuestion.position} of {questions.length}
+                  </span>
+                  <h3>“{currentQuestion.text}”</h3>
+                  {interviewState?.recheck_question === currentQuestion.id && (
+                    <div className="recheck-notice" role="status">
+                      <strong>Additional voice verification requested.</strong>
+                      <p>
+                        You can take a moment to prepare. Your interviewer will
+                        start another recording for this question.
+                      </p>
+                    </div>
+                  )}
+                  <p className="capture-status">
+                    Status:{" "}
+                    <strong>
+                      {interviewState?.capture_status === "recording"
+                        ? "Your answer is being recorded for verification"
+                        : interviewState?.capture_status === "processing"
+                          ? "Your answer is being verified"
+                          : interviewState?.capture_status === "completed"
+                            ? "Verification completed"
+                            : interviewState?.capture_status === "failed"
+                              ? "The recording could not be verified. Please try again"
+                              : "Waiting for interviewer"}
+                    </strong>
+                  </p>
+                  {interviewState?.capture_status === "recording" && (
+                    <p className="recording-indicator">
+                      <i /> Recording in progress
+                    </p>
+                  )}
+                </div>
+              )}
               {session?.ended ? (
                 <div className="workflow-notice is-ended" role="status">
                   <strong>This interview has ended.</strong>
@@ -1010,6 +1226,39 @@ export default function Interview() {
                         before you start.
                       </li>
                     </ul>
+                    <div className="enrollment-status">
+                      <p>
+                        Microphone permission:{" "}
+                        <strong>
+                          {connected &&
+                          candidateMic?.track &&
+                          !candidateMic.isMuted
+                            ? "Ready"
+                            : connected
+                              ? "Unavailable or muted"
+                              : "Checked when you join"}
+                        </strong>
+                      </p>
+                      <p>
+                        Enrollment status:{" "}
+                        <strong>
+                          {session.enrolled
+                            ? "Voice Enrollment Successful"
+                            : phase.startsWith("Recording")
+                              ? "Recording Voice Reference"
+                              : phase
+                                ? "Processing Voice Reference"
+                                : "Waiting for Enrollment"}
+                        </strong>
+                      </p>
+                      {(phase.startsWith("Recording") || session.enrolled) && (
+                        <progress
+                          max={25}
+                          value={session.enrolled ? 25 : elapsed}
+                          aria-label="Voice enrollment progress"
+                        />
+                      )}
+                    </div>
                     <button
                       disabled={
                         busy ||
@@ -1043,6 +1292,51 @@ export default function Interview() {
                     the candidate’s remote microphone track is captured.
                   </p>
                   <div className="capture-fields" id="answer-capture">
+                    <div className="question-manager">
+                      <div className="question-manager-heading">
+                        <strong>Interview questions</strong>
+                        <button
+                          className="secondary compact-button"
+                          disabled={busy}
+                          onClick={() => run(addQuestion)}
+                        >
+                          Add question
+                        </button>
+                      </div>
+                      <div
+                        className="question-tabs"
+                        role="list"
+                        aria-label="Interview questions"
+                      >
+                        {questions.map((item) => {
+                          const questionResults = results.filter(
+                            (result) => result.questionId === item.id,
+                          );
+                          const status = questionResults.some(
+                            (result) => result.outcome !== "passed",
+                          )
+                            ? "Review required"
+                            : questionResults.some(
+                                  (result) => result.outcome === "passed",
+                                )
+                              ? "Verified"
+                              : "Pending";
+                          return (
+                            <button
+                              type="button"
+                              role="listitem"
+                              className={`question-tab ${item.id === interviewState?.current_question ? "is-current" : ""}`}
+                              key={item.id}
+                              disabled={busy}
+                              onClick={() => run(() => selectQuestion(item))}
+                            >
+                              <span>Question {item.position}</span>
+                              <small>{status}</small>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
                     <label className="field-label" htmlFor="question-prompt">
                       Interview question
                     </label>
@@ -1054,6 +1348,33 @@ export default function Interview() {
                       onChange={(event) => setQuestion(event.target.value)}
                       placeholder="Enter the question asked"
                     />
+                    <div className="question-edit-actions">
+                      <button
+                        className="secondary"
+                        disabled={busy || !question.trim()}
+                        onClick={() => run(saveQuestion)}
+                      >
+                        Save question
+                      </button>
+                      <button
+                        className="secondary"
+                        disabled={
+                          busy ||
+                          !currentQuestion ||
+                          currentQuestion.position >= questions.length
+                        }
+                        onClick={() => {
+                          const next = questions.find(
+                            (item) =>
+                              item.position ===
+                              (currentQuestion?.position || 0) + 1,
+                          );
+                          if (next) void run(() => selectQuestion(next));
+                        }}
+                      >
+                        Next question
+                      </button>
+                    </div>
                     <label className="field-label" htmlFor="capture-limit">
                       Maximum answer recording · seconds
                     </label>
@@ -1168,12 +1489,50 @@ export default function Interview() {
           </div>
           {role === "interviewer" && (
             <section className="panel results-panel space-y-4">
-              <h2>Actual sample results</h2>
+              <div className="results-title-row">
+                <div>
+                  <p className="section-kicker">VERIFICATION DASHBOARD</p>
+                  <h2>Question-level results</h2>
+                </div>
+                <button className="secondary" onClick={() => window.print()}>
+                  Download report
+                </button>
+              </div>
               <p className="note">
                 Only a speaker match plus a real-speech verdict passes both
                 checks. A technical failure never counts as a pass. Earlier
                 results remain visible.
               </p>
+              {reviewRequired.length > 0 && (
+                <div className="requires-review">
+                  <h3>Requires Review</h3>
+                  {reviewRequired.map((result) => (
+                    <div className="review-summary" key={`review-${result.id}`}>
+                      <div>
+                        <strong>
+                          Question{" "}
+                          {questions.find(
+                            (item) => item.id === result.questionId,
+                          )?.position || "—"}
+                        </strong>
+                        <p>{result.question}</p>
+                        <small>
+                          {result.outcome === "concern"
+                            ? "Provider signal requires human review"
+                            : "Verification was inconclusive or incomplete"}
+                        </small>
+                      </div>
+                      <button
+                        className="secondary"
+                        disabled={busy || !!interviewState?.recheck_operation}
+                        onClick={() => requestRecheck(result)}
+                      >
+                        Request Recheck
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
               {results.map((result) => (
                 <article
                   key={result.id}
@@ -1182,11 +1541,19 @@ export default function Interview() {
                 >
                   <div className="history-heading">
                     <h3>
-                      {result.outcome === "passed"
-                        ? "Both checks passed for this sample"
-                        : result.outcome === "concern"
-                          ? "Review required · concern detected"
-                          : "Verification incomplete / uncertain"}
+                      Question{" "}
+                      {questions.find((item) => item.id === result.questionId)
+                        ?.position || "—"}{" "}
+                      · Attempt {result.attemptNumber || 1}
+                      <span className="result-heading-detail">
+                        {" "}
+                        —{" "}
+                        {result.outcome === "passed"
+                          ? "Both checks passed for this sample"
+                          : result.outcome === "concern"
+                            ? "Review required · concern detected"
+                            : "Verification incomplete / uncertain"}
+                      </span>
                     </h3>
                     <span className={`outcome-tag outcome-${result.outcome}`}>
                       {result.outcome === "passed"
@@ -1215,117 +1582,124 @@ export default function Interview() {
                       Potentially synthetic speech flagged for human review.
                     </p>
                   )}
-                  <div className="technical-checks">
-                    <div
-                      className={`technical-check ${result.speaker === "no_match" ? "check-concern" : result.speaker === "unavailable" ? "check-incomplete" : ""}`}
-                    >
-                      <strong>Speaker verification</strong>
-                      <span>{speakerText[result.speaker]}</span>
-                      {result.speakerSimilarity !== null &&
-                        result.speakerSimilarity !== undefined && (
+                  <details className="evidence-details">
+                    <summary>View Evidence</summary>
+                    <div className="technical-checks">
+                      <div
+                        className={`technical-check ${result.speaker === "no_match" ? "check-concern" : result.speaker === "unavailable" ? "check-incomplete" : ""}`}
+                      >
+                        <strong>Speaker verification</strong>
+                        <span>{speakerText[result.speaker]}</span>
+                        {result.speakerSimilarity !== null &&
+                          result.speakerSimilarity !== undefined && (
+                            <span className="score-line">
+                              Similarity: {result.speakerSimilarity.toFixed(4)}{" "}
+                              · threshold:{" "}
+                              {result.speakerThreshold?.toFixed(4) ??
+                                "Not returned"}{" "}
+                              <small>
+                                (higher means more alike; not a percentage)
+                              </small>
+                            </span>
+                          )}
+                        {result.speakerDurationSeconds != null && (
                           <span className="score-line">
-                            Similarity: {result.speakerSimilarity.toFixed(4)} ·
-                            threshold:{" "}
-                            {result.speakerThreshold?.toFixed(4) ??
-                              "Not returned"}{" "}
-                            <small>
-                              (higher means more alike; not a percentage)
-                            </small>
+                            Analyzed audio:{" "}
+                            {result.speakerDurationSeconds.toFixed(2)} seconds
                           </span>
                         )}
-                      {result.speakerDurationSeconds != null && (
-                        <span className="score-line">
-                          Analyzed audio:{" "}
-                          {result.speakerDurationSeconds.toFixed(2)} seconds
-                        </span>
-                      )}
-                      {(result.speakerErrorCode ||
-                        result.speakerErrorMessage ||
-                        result.speakerError) && (
-                        <span className="technical-error">
-                          Error {result.speakerErrorCode || result.speakerError}
-                          :{" "}
-                          {result.speakerErrorMessage ||
-                            "Verification unavailable."}
-                        </span>
-                      )}
-                    </div>
-                    <div
-                      className={`technical-check ${result.deepfake === "fake" ? "check-concern" : result.deepfake === "not_sure" || result.deepfake === "unavailable" ? "check-incomplete" : ""}`}
-                    >
-                      <strong>Synthetic-speech detection</strong>
-                      <span>{deepfakeText[result.deepfake]}</span>
-                      {result.deepfakeScore !== null &&
-                        result.deepfakeScore !== undefined && (
-                          <span className="score-line">
-                            Synthetic-likelihood score:{" "}
-                            {result.deepfakeScore.toFixed(4)} · threshold:{" "}
-                            {result.deepfakeThreshold?.toFixed(4) ??
-                              "Not returned"}{" "}
-                            <small>
-                              (higher means more likely synthetic; decide with
-                              verdict)
-                            </small>
+                        {(result.speakerErrorCode ||
+                          result.speakerErrorMessage ||
+                          result.speakerError) && (
+                          <span className="technical-error">
+                            Error{" "}
+                            {result.speakerErrorCode || result.speakerError}:{" "}
+                            {result.speakerErrorMessage ||
+                              "Verification unavailable."}
                           </span>
                         )}
-                      {result.deepfakeDurationSeconds != null && (
-                        <span className="score-line">
-                          Analyzed audio:{" "}
-                          {result.deepfakeDurationSeconds.toFixed(2)} seconds
-                        </span>
-                      )}
-                      {result.deepfakeDecidedBy && (
-                        <span className="score-line">
-                          Decision source: {result.deepfakeDecidedBy}
-                        </span>
-                      )}
-                      {(result.deepfakeErrorCode ||
-                        result.deepfakeErrorMessage ||
-                        result.deepfakeError) && (
-                        <span className="technical-error">
-                          Error{" "}
-                          {result.deepfakeErrorCode || result.deepfakeError}:{" "}
-                          {result.deepfakeErrorMessage ||
-                            "Detection unavailable."}
-                        </span>
-                      )}
+                      </div>
+                      <div
+                        className={`technical-check ${result.deepfake === "fake" ? "check-concern" : result.deepfake === "not_sure" || result.deepfake === "unavailable" ? "check-incomplete" : ""}`}
+                      >
+                        <strong>Synthetic-speech detection</strong>
+                        <span>{deepfakeText[result.deepfake]}</span>
+                        {result.deepfakeScore !== null &&
+                          result.deepfakeScore !== undefined && (
+                            <span className="score-line">
+                              Synthetic-likelihood score:{" "}
+                              {result.deepfakeScore.toFixed(4)} · threshold:{" "}
+                              {result.deepfakeThreshold?.toFixed(4) ??
+                                "Not returned"}{" "}
+                              <small>
+                                (higher means more likely synthetic; decide with
+                                verdict)
+                              </small>
+                            </span>
+                          )}
+                        {result.deepfakeDurationSeconds != null && (
+                          <span className="score-line">
+                            Analyzed audio:{" "}
+                            {result.deepfakeDurationSeconds.toFixed(2)} seconds
+                          </span>
+                        )}
+                        {result.deepfakeDecidedBy && (
+                          <span className="score-line">
+                            Decision source: {result.deepfakeDecidedBy}
+                          </span>
+                        )}
+                        {(result.deepfakeErrorCode ||
+                          result.deepfakeErrorMessage ||
+                          result.deepfakeError) && (
+                          <span className="technical-error">
+                            Error{" "}
+                            {result.deepfakeErrorCode || result.deepfakeError}:{" "}
+                            {result.deepfakeErrorMessage ||
+                              "Detection unavailable."}
+                          </span>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                  {result.deepfakeSegments.length > 0 && (
+                    {result.deepfakeSegments.length > 0 && (
+                      <details className="note">
+                        <summary>Detection segments</summary>
+                        <ul>
+                          {result.deepfakeSegments.map((segment, index) => (
+                            <li key={`${segment.start}-${index}`}>
+                              {segment.start.toFixed(2)}–
+                              {segment.end.toFixed(2)} sec ·
+                              synthetic-likelihood score{" "}
+                              {segment.score.toFixed(4)}
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    )}
+                    {result.partialFailure && (
+                      <p className="incomplete-note">
+                        At least one check is incomplete. Do not treat this
+                        answer as a pass.
+                      </p>
+                    )}
                     <details className="note">
-                      <summary>Detection segments</summary>
-                      <ul>
-                        {result.deepfakeSegments.map((segment, index) => (
-                          <li key={`${segment.start}-${index}`}>
-                            {segment.start.toFixed(2)}–{segment.end.toFixed(2)}{" "}
-                            sec · synthetic-likelihood score{" "}
-                            {segment.score.toFixed(4)}
-                          </li>
-                        ))}
-                      </ul>
+                      <summary>Provider request details</summary>
+                      <p>
+                        Speaker operation:{" "}
+                        {result.operationId || "Not returned"}
+                        <br />
+                        Deepfake operation:{" "}
+                        {result.deepfakeOperationId || "Not returned"}
+                        <br />
+                        Provider HTTP status:{" "}
+                        {result.providerStatus ??
+                          "Not submitted after preflight"}
+                        <br />
+                        Request ID: {result.requestId || "Not returned"}
+                        <br />
+                        Processed:{" "}
+                        {new Date(result.receivedAt).toLocaleString()}
+                      </p>
                     </details>
-                  )}
-                  {result.partialFailure && (
-                    <p className="incomplete-note">
-                      At least one check is incomplete. Do not treat this answer
-                      as a pass.
-                    </p>
-                  )}
-                  <details className="note">
-                    <summary>Provider request details</summary>
-                    <p>
-                      Speaker operation: {result.operationId || "Not returned"}
-                      <br />
-                      Deepfake operation:{" "}
-                      {result.deepfakeOperationId || "Not returned"}
-                      <br />
-                      Provider HTTP status:{" "}
-                      {result.providerStatus ?? "Not submitted after preflight"}
-                      <br />
-                      Request ID: {result.requestId || "Not returned"}
-                      <br />
-                      Processed: {new Date(result.receivedAt).toLocaleString()}
-                    </p>
                   </details>
                   <div className="history-actions">
                     <button
@@ -1338,37 +1712,187 @@ export default function Interview() {
                     {result.outcome !== "passed" && (
                       <button
                         className="secondary"
-                        disabled={busy}
-                        onClick={() => repeatQuestion(result)}
+                        disabled={busy || !!interviewState?.recheck_operation}
+                        onClick={() => requestRecheck(result)}
                       >
-                        Request a fresh sample
+                        Request Recheck
                       </button>
                     )}
-                    {result.outcome !== "passed" &&
-                      (result.humanReview?.action ===
-                      "continue_with_unresolved_result" ? (
-                        <span className="review-recorded">
-                          Earlier{" "}
-                          {result.outcome === "concern"
-                            ? "concern"
-                            : "incomplete check"}{" "}
-                          remains recorded · continued{" "}
-                          {new Date(result.humanReview.at).toLocaleTimeString()}
-                        </span>
-                      ) : (
-                        <button
-                          className="secondary"
-                          disabled={reviewBusy === result.id}
-                          onClick={() => markConcernContinued(result)}
-                        >
-                          {reviewBusy === result.id
-                            ? "Saving review…"
-                            : "Continue with unresolved result noted"}
-                        </button>
-                      ))}
+                  </div>
+                  <div className="human-review-panel">
+                    <strong>Human reviewer decision</strong>
+                    {latestReview(result.id) && (
+                      <p className="review-recorded">
+                        Latest:{" "}
+                        {latestReview(result.id)!.decision.replaceAll("_", " ")}{" "}
+                        ·{" "}
+                        {new Date(
+                          latestReview(result.id)!.created,
+                        ).toLocaleString()}
+                        {latestReview(result.id)!.notes && (
+                          <> — {latestReview(result.id)!.notes}</>
+                        )}
+                      </p>
+                    )}
+                    <textarea
+                      aria-label={`Reviewer notes for ${result.question}`}
+                      value={reviewNotes[result.id] || ""}
+                      onChange={(event) =>
+                        setReviewNotes((current) => ({
+                          ...current,
+                          [result.id]: event.target.value,
+                        }))
+                      }
+                      placeholder="Optional reviewer notes"
+                      maxLength={1000}
+                    />
+                    <div className="review-buttons">
+                      <button
+                        className="secondary"
+                        disabled={reviewBusy === result.id}
+                        onClick={() => saveReview(result, "concern_resolved")}
+                      >
+                        Mark Resolved
+                      </button>
+                      <button
+                        className="secondary"
+                        disabled={reviewBusy === result.id}
+                        onClick={() =>
+                          saveReview(result, "further_verification_required")
+                        }
+                      >
+                        Further Verification
+                      </button>
+                      <button
+                        className="secondary"
+                        disabled={reviewBusy === result.id}
+                        onClick={() =>
+                          saveReview(result, "escalated_manual_review")
+                        }
+                      >
+                        Escalate for Manual Review
+                      </button>
+                    </div>
                   </div>
                 </article>
               ))}
+              <section
+                className="interview-report"
+                aria-label="Interview report"
+              >
+                <div className="results-title-row">
+                  <div>
+                    <p className="section-kicker">INTERVIEW REPORT</p>
+                    <h2>Integrity review summary</h2>
+                  </div>
+                  <span className="outcome-tag">
+                    {session?.ended ? "Ended" : "In progress"}
+                  </span>
+                </div>
+                <div className="report-summary">
+                  <p>
+                    <strong>Session:</strong> {id}
+                  </p>
+                  <p>
+                    <strong>Candidate:</strong> candidate
+                  </p>
+                  <p>
+                    <strong>Interview date:</strong>{" "}
+                    {questions[0]
+                      ? new Date(questions[0].created).toLocaleString()
+                      : "Unavailable"}
+                  </p>
+                  <p>
+                    <strong>Interview duration:</strong>{" "}
+                    {interviewMinutes
+                      ? `${interviewMinutes} minute${interviewMinutes === 1 ? "" : "s"}`
+                      : "Unavailable"}
+                  </p>
+                  <p>
+                    <strong>Total questions:</strong> {questions.length}
+                  </p>
+                  <p>
+                    <strong>Verified answers:</strong>{" "}
+                    {results.filter((item) => item.outcome === "passed").length}
+                  </p>
+                  <p>
+                    <strong>Requires review:</strong> {reviewRequired.length}
+                  </p>
+                  <p>
+                    <strong>Inconclusive:</strong>{" "}
+                    {
+                      results.filter((item) => item.outcome === "incomplete")
+                        .length
+                    }
+                  </p>
+                  <p>
+                    <strong>Rechecks performed:</strong>{" "}
+                    {results.filter((item) => item.recheckOf).length}
+                  </p>
+                </div>
+                <div className="report-questions">
+                  {questions.map((item) => {
+                    const attempts = results.filter(
+                      (result) => result.questionId === item.id,
+                    );
+                    return (
+                      <article key={`report-${item.id}`}>
+                        <strong>
+                          Question {item.position}: {item.text}
+                        </strong>
+                        <p>
+                          {attempts.length
+                            ? attempts
+                                .map(
+                                  (attempt) =>
+                                    `Attempt ${attempt.attemptNumber || 1}: ${speakerText[attempt.speaker]}; ${deepfakeText[attempt.deepfake]}; ${attempt.outcome}`,
+                                )
+                                .join(" | ")
+                            : "No answer verified."}
+                        </p>
+                        <p>
+                          Human review:{" "}
+                          {attempts
+                            .map((attempt) =>
+                              latestReview(attempt.id)?.decision.replaceAll(
+                                "_",
+                                " ",
+                              ),
+                            )
+                            .filter(Boolean)
+                            .join(", ") || "Pending review"}
+                        </p>
+                      </article>
+                    );
+                  })}
+                </div>
+                <div className="report-final-review">
+                  <h3>Final review</h3>
+                  <p>
+                    <strong>Overall status:</strong>{" "}
+                    {outstandingConcerns
+                      ? "Human review required"
+                      : results.length
+                        ? "No outstanding concerns recorded"
+                        : "Pending verification"}
+                  </p>
+                  <p>
+                    <strong>Outstanding concerns:</strong> {outstandingConcerns}
+                  </p>
+                  <p>
+                    <strong>Reviewer notes:</strong>{" "}
+                    {reviews
+                      .map((item) => item.notes)
+                      .filter(Boolean)
+                      .join(" | ") || "No reviewer notes recorded."}
+                  </p>
+                </div>
+                <p className="report-disclaimer">
+                  AI verification results are supporting signals and do not
+                  independently establish candidate identity, dishonesty, or
+                  misconduct.
+                </p>
+              </section>
             </section>
           )}
         </>

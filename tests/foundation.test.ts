@@ -13,6 +13,10 @@ import {
   claim,
   active,
   rateLimit,
+  ensureInterviewWorkspace,
+  interviewQuestions,
+  interviewState,
+  reviewHistory,
   verificationHistory,
 } from "../src/lib/server/store";
 import { provider } from "../src/lib/server/provider";
@@ -245,6 +249,41 @@ test("verification history retains repeated answers with their question and sess
   );
   assert.equal(history[0].outcome, "concern");
   assert.equal(history[1].outcome, "passed");
+});
+test("interview workspace persists questions, synchronized capture state, and separate reviews", async () => {
+  const created = await createSession();
+  await ensureInterviewWorkspace(created.id);
+  const questions = await interviewQuestions(created.id);
+  assert.equal(questions.length, 1);
+  assert.equal(questions[0].position, 1);
+  assert.equal(
+    (await interviewState(created.id)).current_question,
+    questions[0].id,
+  );
+  await db()
+    .prepare(
+      "UPDATE interview_state SET capture_status='recording',recheck_question=?,recheck_operation=? WHERE session=?",
+    )
+    .run(questions[0].id, "op-original", created.id);
+  const state = await interviewState(created.id);
+  assert.equal(state.capture_status, "recording");
+  assert.equal(state.recheck_operation, "op-original");
+  await db()
+    .prepare(
+      "INSERT INTO reviews (id,session,question,operation,decision,notes,created) VALUES (?,?,?,?,?,?,?)",
+    )
+    .run(
+      "review-1",
+      created.id,
+      questions[0].id,
+      "op-original",
+      "concern_resolved",
+      "Reviewed separately from provider evidence.",
+      Date.now(),
+    );
+  const reviews = await reviewHistory(created.id);
+  assert.equal(reviews.length, 1);
+  assert.equal(reviews[0].decision, "concern_resolved");
 });
 test("provider adapter sends real documented multipart fields; same key and bytes survive a bounded retry (mock transport)", async () => {
   const original = globalThis.fetch;
