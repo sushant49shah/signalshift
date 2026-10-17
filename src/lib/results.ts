@@ -23,10 +23,87 @@ export interface AnalysisResult {
   deepfakeOperationId?: string;
   requestId?: string;
 }
+export type RecommendationTone =
+  "positive" | "warning" | "critical" | "neutral";
+export interface VerificationRecommendation {
+  action:
+    | "Continue Interview"
+    | "Review Audio"
+    | "Request Identity Recheck"
+    | "Prioritize Human Review"
+    | "Request Cleaner Recording"
+    | "Retry Verification";
+  explanation: string;
+  tone: RecommendationTone;
+}
 export function object(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+export function recommendVerification(
+  value: unknown,
+): VerificationRecommendation {
+  const result = object(value);
+  const speaker = result.speaker;
+  const deepfake = result.deepfake;
+  const hasValidSpeaker = speaker === "match" || speaker === "no_match";
+  const hasValidDeepfake =
+    deepfake === "real" || deepfake === "fake" || deepfake === "not_sure";
+  const hasProviderFailure =
+    !hasValidSpeaker ||
+    !hasValidDeepfake ||
+    result.partialFailure === true ||
+    (typeof result.providerStatus === "number" &&
+      (result.providerStatus < 200 || result.providerStatus >= 300)) ||
+    typeof result.speakerError === "string" ||
+    typeof result.speakerErrorCode === "string" ||
+    typeof result.speakerErrorMessage === "string" ||
+    typeof result.deepfakeError === "string" ||
+    typeof result.deepfakeErrorCode === "string" ||
+    typeof result.deepfakeErrorMessage === "string";
+
+  if (hasProviderFailure)
+    return {
+      action: "Retry Verification",
+      explanation:
+        "One or both provider checks failed, are missing, or returned an unusable verdict. Retry the verification before drawing a conclusion.",
+      tone: "neutral",
+    };
+  if (deepfake === "not_sure")
+    return {
+      action: "Request Cleaner Recording",
+      explanation:
+        "The synthetic-speech check was inconclusive. Ask for a longer, clearer recording in a quiet environment and verify it again.",
+      tone: "warning",
+    };
+  if (speaker === "match" && deepfake === "real")
+    return {
+      action: "Continue Interview",
+      explanation:
+        "DetectifAI returned a speaker match and classified this sample as authentic speech. Continue if the reviewer has no other concerns.",
+      tone: "positive",
+    };
+  if (speaker === "match" && deepfake === "fake")
+    return {
+      action: "Review Audio",
+      explanation:
+        "The voice matched the enrolled reference, but DetectifAI returned a synthetic-speech signal. Review the recording and provider evidence.",
+      tone: "warning",
+    };
+  if (speaker === "no_match" && deepfake === "real")
+    return {
+      action: "Request Identity Recheck",
+      explanation:
+        "The sample was classified as authentic speech, but the speaker did not match the enrolled reference. Confirm identity and capture a fresh sample.",
+      tone: "warning",
+    };
+  return {
+    action: "Prioritize Human Review",
+    explanation:
+      "DetectifAI returned both a speaker mismatch and a synthetic-speech signal. A human reviewer should assess the audio and context before proceeding.",
+    tone: "critical",
+  };
 }
 function identifier(value: unknown) {
   return typeof value === "string" && /^[a-zA-Z0-9_-]{1,100}$/.test(value)

@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Room,
   RoomEvent,
@@ -11,7 +11,7 @@ import {
 } from "livekit-client";
 import { capture } from "@/lib/capture";
 import { inspectWav } from "@/lib/wav";
-import type { AnalysisResult } from "@/lib/results";
+import { recommendVerification, type AnalysisResult } from "@/lib/results";
 type Role = "interviewer" | "candidate";
 type Session = {
   id: string;
@@ -83,7 +83,72 @@ async function api(
     throw new Error(body.error || "Request failed; results are unavailable.");
   return body;
 }
-function Video({ participant }: { participant?: Participant }) {
+type MeetingIconName =
+  | "microphone"
+  | "microphoneOff"
+  | "camera"
+  | "cameraOff"
+  | "settings"
+  | "phone";
+function MeetingIcon({ name }: { name: MeetingIconName }) {
+  const paths: Record<MeetingIconName, ReactNode> = {
+    microphone: (
+      <>
+        <rect x="9" y="3" width="6" height="12" rx="3" />
+        <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M9 21h6" />
+      </>
+    ),
+    microphoneOff: (
+      <>
+        <path d="M9 8v3a3 3 0 0 0 4.7 2.5M15 10V6a3 3 0 0 0-5.5-1.6M5.5 11.5a6.5 6.5 0 0 0 10.7 5M18.5 11.5a6.5 6.5 0 0 1-.8 3.1M12 18v3M9 21h6M3 3l18 18" />
+      </>
+    ),
+    camera: (
+      <>
+        <rect x="3" y="6" width="13" height="12" rx="2" />
+        <path d="m16 10 5-3v10l-5-3z" />
+      </>
+    ),
+    cameraOff: (
+      <>
+        <path d="M10.5 6H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h11V11M16 10l5-3v10l-3-1.8M3 3l18 18" />
+      </>
+    ),
+    settings: (
+      <>
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" />
+      </>
+    ),
+    phone: (
+      <path
+        d="M3.5 13.7c5.1-4.2 11.9-4.2 17 0l-2.4 3.2-3.5-1.7v-2.3a8.8 8.8 0 0 0-5.2 0v2.3l-3.5 1.7-2.4-3.2Z"
+        fill="currentColor"
+        stroke="none"
+      />
+    ),
+  };
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      {paths[name]}
+    </svg>
+  );
+}
+function Video({
+  participant,
+  label,
+}: {
+  participant?: Participant;
+  label: string;
+}) {
   const ref = useRef<HTMLVideoElement>(null);
   const track = participant?.getTrackPublication(Track.Source.Camera)?.track;
   const muted = participant?.getTrackPublication(Track.Source.Camera)?.isMuted;
@@ -96,13 +161,16 @@ function Video({ participant }: { participant?: Participant }) {
     };
   }, [track, muted]);
   return (
-    <div className="tile">
+    <div className={`tile ${track && !muted ? "has-video" : "is-waiting"}`}>
       {track && !muted ? (
         <video ref={ref} autoPlay playsInline muted />
       ) : (
-        <p>Camera off / waiting</p>
+        <div className="camera-placeholder">
+          <MeetingIcon name="cameraOff" />
+          <p>Camera off / waiting</p>
+        </div>
       )}
-      <span>{participant?.identity || "Waiting for participant"}</span>
+      <span title={participant?.identity}>{label}</span>
     </div>
   );
 }
@@ -129,6 +197,32 @@ const deepfakeText = {
   not_sure: "Uncertain — try a longer or clearer sample",
   unavailable: "Unavailable — no pass assumed",
 };
+function RecommendedAction({ result }: { result: Result }) {
+  const recommendation = recommendVerification(result);
+  return (
+    <aside
+      className={`recommended-action recommendation-${recommendation.tone}`}
+      aria-label="Recommended action"
+    >
+      <div className="recommendation-heading">
+        <div>
+          <p className="section-kicker">RECOMMENDED ACTION</p>
+          <h4>{recommendation.action}</h4>
+        </div>
+        <span>Reviewer guidance</span>
+      </div>
+      <p>{recommendation.explanation}</p>
+      <p className="recommendation-basis">
+        Based on provider verdicts: {speakerText[result.speaker]} ·{" "}
+        {deepfakeText[result.deepfake]}
+      </p>
+      <small>
+        Workflow recommendation only. The human reviewer retains the final
+        decision.
+      </small>
+    </aside>
+  );
+}
 export default function Interview() {
   const [id, setId] = useState(""),
     [role, setRole] = useState<Role>("interviewer"),
@@ -677,7 +771,7 @@ export default function Interview() {
   ).length;
   return (
     <main
-      className={`app-shell mx-auto max-w-6xl space-y-6 px-5 py-10 ${role === "interviewer" ? "interviewer-shell" : ""}`}
+      className={`app-shell mx-auto max-w-6xl space-y-6 px-5 py-10 ${!id ? "landing-shell" : role === "interviewer" ? "interviewer-shell interviewer-session-shell" : "candidate-session-shell"}`}
     >
       <nav
         className={`top-nav ${id ? "active-interview-nav" : ""}`}
@@ -718,21 +812,18 @@ export default function Interview() {
           id="overview"
         >
           <div className="brand-copy">
-            <p className="eyebrow">
-              {role === "candidate"
-                ? "CONSENTED INTERVIEW"
-                : "TECHNICAL FOUNDATION · LIVE PROVIDER INTEGRATION"}
-            </p>
             <h1 className="brand-title">
-              SignalShift <span>AI</span>
+              Secure <span>·</span> Fair <span>·</span> Trusted{" "}
+              <em>Interviews</em>
             </h1>
             <p className="brand-description">
-              {role === "candidate"
-                ? "Secure · Fair · Trusted Interviews"
-                : "Voice continuity and synthetic-speech checks for a consented interview."}
+              Voice continuity and synthetic-speech checks for a consented
+              interview.
             </p>
+            <a className="hero-cta" href="#start-session">
+              Get started <span aria-hidden="true">→</span>
+            </a>
           </div>
-          <span className="role-badge">{id ? role : "Two-person room"}</span>
         </header>
       )}
       {error && (
@@ -856,6 +947,37 @@ export default function Interview() {
         </section>
       ) : (
         <>
+          {role === "interviewer" && (
+            <aside
+              className="dashboard-sidebar"
+              aria-label="Interview workspace"
+            >
+              <nav>
+                <a className="is-active" href="#interview-room">
+                  <span aria-hidden="true">⌂</span> Interviewer
+                </a>
+                <a href="/">
+                  <span aria-hidden="true">＋</span> New interview
+                </a>
+                <a href="/test-audio">
+                  <span aria-hidden="true">≋</span> Test audio
+                </a>
+                <a href="#verification-results">
+                  <span aria-hidden="true">◷</span> Results
+                </a>
+                <a href="#interview-report">
+                  <span aria-hidden="true">▤</span> Report
+                </a>
+              </nav>
+              <div className="sidebar-profile">
+                <span>S</span>
+                <div>
+                  <strong>Interviewer</strong>
+                  <small>Session owner</small>
+                </div>
+              </div>
+            </aside>
+          )}
           {invitation && (
             <details className="invite-disclosure">
               <summary>Invite candidate</summary>
@@ -886,39 +1008,125 @@ export default function Interview() {
               </button>
             </details>
           )}
+          {role === "candidate" && !session?.ended && (
+            <ol className="candidate-progress" aria-label="Interview progress">
+              <li className={session?.consent ? "is-complete" : "is-current"}>
+                <span>{session?.consent ? "✓" : "1"}</span> Consent
+              </li>
+              <li
+                className={
+                  session?.enrolled
+                    ? "is-complete"
+                    : session?.consent
+                      ? "is-current"
+                      : ""
+                }
+              >
+                <span>{session?.enrolled ? "✓" : "2"}</span> Voice enrollment
+              </li>
+              <li className={session?.enrolled ? "is-current" : ""}>
+                <span>3</span> Join interview
+              </li>
+            </ol>
+          )}
           {role === "candidate" && !session?.consent && !session?.ended && (
-            <section className="panel candidate-consent space-y-4">
-              <h2>Before you join</h2>
-              <p>
-                Short audio samples will be recorded and analyzed for interview
-                integrity and voice verification. This includes a 25-second
-                voice sample and answer clips selected by your interviewer. Your
-                camera is used for the call but is not analyzed.
-              </p>
-              <p>
-                The app does not retain audio recordings. The service provider
-                creates and retains a derived voice profile for comparison; the
-                app requests its deletion when the interview ends, but deletion
-                may not always be confirmed. Interview and verification metadata
-                are retained by this app.
-              </p>
-              <p>
-                Results can be wrong and are reviewed by the interviewer. They
-                will not automatically reject you. You can withdraw at any time;
-                this stops new recording and analysis, but audio already sent
-                cannot be recalled. Browser microphone permission is separate
-                from your consent.
-              </p>
-              <label className="block">
-                <input
-                  type="checkbox"
-                  checked={accepted}
-                  onChange={(e) => setAccepted(e.target.checked)}
-                />
-                I consent to recording and analyzing short audio samples for
-                this interview.
-              </label>
-            </section>
+            <div className="candidate-consent-layout">
+              <section className="panel candidate-consent space-y-4">
+                <div className="consent-heading">
+                  <span aria-hidden="true">▤</span>
+                  <div>
+                    <p className="section-kicker">CONSENT &amp; PRIVACY</p>
+                    <h2>Before you join</h2>
+                  </div>
+                </div>
+                <p>
+                  Short audio samples will be recorded and analyzed for
+                  interview integrity and voice verification. This includes a
+                  25-second voice sample and answer clips selected by your
+                  interviewer. Your camera is used for the call but is not
+                  analyzed.
+                </p>
+                <div className="consent-assurances">
+                  <p>
+                    <span aria-hidden="true">▣</span>Your data is used only for
+                    this interview.
+                  </p>
+                  <p>
+                    <span aria-hidden="true">●</span>Results are reviewed by the
+                    interviewer.
+                  </p>
+                  <p>
+                    <span aria-hidden="true">↗</span>You can withdraw at any
+                    time.
+                  </p>
+                </div>
+                <details className="consent-details">
+                  <summary>Data retention and withdrawal details</summary>
+                  <p>
+                    The app does not retain audio recordings. The service
+                    provider creates a derived voice profile for comparison and
+                    deletion is requested when the interview ends. Metadata is
+                    retained, and audio already sent cannot be recalled.
+                  </p>
+                </details>
+                <label className="block consent-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={accepted}
+                    onChange={(e) => setAccepted(e.target.checked)}
+                  />
+                  I consent to recording and analyzing short audio samples for
+                  this interview.
+                </label>
+                <div className="consent-actions">
+                  <button disabled={busy || !accepted} onClick={connect}>
+                    Agree and join call <span aria-hidden="true">→</span>
+                  </button>
+                  <button
+                    className="secondary"
+                    disabled={busy}
+                    onClick={() => stop("withdraw")}
+                  >
+                    Decline and leave
+                  </button>
+                </div>
+              </section>
+              <aside
+                className="panel candidate-guide"
+                aria-label="What happens next"
+              >
+                <p className="section-kicker">YOUR INTERVIEW</p>
+                <h2>What happens next?</h2>
+                <ol>
+                  <li>
+                    <span>1</span>
+                    <div>
+                      <strong>Voice enrollment</strong>
+                      <p>Record a 25-second sample to create a reference.</p>
+                    </div>
+                  </li>
+                  <li>
+                    <span>2</span>
+                    <div>
+                      <strong>Join the interview</strong>
+                      <p>
+                        Connect to the room with your camera and microphone.
+                      </p>
+                    </div>
+                  </li>
+                  <li>
+                    <span>3</span>
+                    <div>
+                      <strong>Answer questions</strong>
+                      <p>
+                        Your interviewer captures short audio segments for
+                        verification.
+                      </p>
+                    </div>
+                  </li>
+                </ol>
+              </aside>
+            </div>
           )}
           {!session?.ended && (role === "interviewer" || session?.consent) && (
             <section
@@ -994,8 +1202,13 @@ export default function Interview() {
               </div>
             </section>
           )}
-          <div className="workspace-grid grid gap-6 lg:grid-cols-[1.5fr_1fr] interview-workspace">
-            <section className="panel call-panel space-y-4 candidate-call-panel">
+          <div
+            className={`workspace-grid grid gap-6 lg:grid-cols-[1.5fr_1fr] interview-workspace ${role === "candidate" && !session?.consent ? "consent-pending-workspace" : ""}`}
+          >
+            <section
+              className="panel call-panel space-y-4 candidate-call-panel"
+              id="interview-room"
+            >
               <div className="flex flex-wrap justify-between gap-2">
                 <h2>Interview room</h2>
                 <span
@@ -1005,9 +1218,12 @@ export default function Interview() {
                   {connection}
                 </span>
               </div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Video participant={room?.localParticipant} />
-                <Video participant={remote} />
+              <div className="meeting-video-grid">
+                <Video participant={room?.localParticipant} label="You" />
+                <Video
+                  participant={remote}
+                  label={role === "candidate" ? "Interviewer" : "Candidate"}
+                />
               </div>
               {remote &&
                 [...remote.audioTrackPublications.values()]
@@ -1015,9 +1231,12 @@ export default function Interview() {
                   .map((p) => (
                     <RemoteAudio key={p.trackSid} track={p.track!} />
                   ))}
-              <div className="flex flex-wrap gap-2 candidate-controls">
+              <div
+                className={`candidate-controls meeting-controls ${connected ? "is-connected" : "is-disconnected"}`}
+              >
                 {!connected && !session?.ended && (
                   <button
+                    className="meeting-join"
                     disabled={
                       busy ||
                       !session ||
@@ -1033,7 +1252,7 @@ export default function Interview() {
                 {connected && (
                   <>
                     <button
-                      className="secondary"
+                      className={`secondary meeting-control ${room?.localParticipant.isMicrophoneEnabled ? "" : "is-off"}`}
                       disabled={busy}
                       onClick={() =>
                         run(async () => {
@@ -1044,12 +1263,23 @@ export default function Interview() {
                         })
                       }
                     >
-                      {room?.localParticipant.isMicrophoneEnabled
-                        ? "Mute"
-                        : "Enable microphone"}
+                      <span className="control-icon">
+                        <MeetingIcon
+                          name={
+                            room?.localParticipant.isMicrophoneEnabled
+                              ? "microphone"
+                              : "microphoneOff"
+                          }
+                        />
+                      </span>
+                      <span>
+                        {room?.localParticipant.isMicrophoneEnabled
+                          ? "Mute"
+                          : "Unmute"}
+                      </span>
                     </button>
                     <button
-                      className="secondary"
+                      className={`secondary meeting-control ${room?.localParticipant.isCameraEnabled ? "" : "is-off"}`}
                       disabled={busy}
                       onClick={() =>
                         run(async () => {
@@ -1060,12 +1290,23 @@ export default function Interview() {
                         })
                       }
                     >
-                      {room?.localParticipant.isCameraEnabled
-                        ? "Turn camera off"
-                        : "Enable camera"}
+                      <span className="control-icon">
+                        <MeetingIcon
+                          name={
+                            room?.localParticipant.isCameraEnabled
+                              ? "camera"
+                              : "cameraOff"
+                          }
+                        />
+                      </span>
+                      <span>
+                        {room?.localParticipant.isCameraEnabled
+                          ? "Turn camera off"
+                          : "Turn camera on"}
+                      </span>
                     </button>
                     <button
-                      className="secondary"
+                      className="secondary meeting-control"
                       onClick={() =>
                         room!
                           .startAudio()
@@ -1074,12 +1315,15 @@ export default function Interview() {
                           )
                       }
                     >
-                      Enable playback
+                      <span className="control-icon">
+                        <MeetingIcon name="settings" />
+                      </span>
+                      <span>Audio setup</span>
                     </button>
                   </>
                 )}
                 <button
-                  className="danger"
+                  className="danger meeting-control meeting-leave"
                   onClick={() => {
                     const action = role === "candidate" ? "withdraw" : "end";
                     const confirmed =
@@ -1092,15 +1336,20 @@ export default function Interview() {
                     if (confirmed) stop(action);
                   }}
                 >
-                  {session?.ended
-                    ? role === "candidate"
-                      ? "Retry ending interview"
-                      : "Retry session cleanup"
-                    : role === "candidate"
-                      ? session?.consent
-                        ? "Withdraw consent and leave"
-                        : "Decline and leave"
-                      : "End session"}
+                  <span className="control-icon">
+                    <MeetingIcon name="phone" />
+                  </span>
+                  <span>
+                    {session?.ended
+                      ? role === "candidate"
+                        ? "Retry leaving"
+                        : "Retry cleanup"
+                      : role === "candidate"
+                        ? session?.consent
+                          ? "Withdraw & leave"
+                          : "Decline & leave"
+                        : "End interview"}
+                  </span>
                 </button>
               </div>
               <p className="note">
@@ -1488,7 +1737,10 @@ export default function Interview() {
             </section>
           </div>
           {role === "interviewer" && (
-            <section className="panel results-panel space-y-4">
+            <section
+              className="panel results-panel space-y-4"
+              id="verification-results"
+            >
               <div className="results-title-row">
                 <div>
                   <p className="section-kicker">VERIFICATION DASHBOARD</p>
@@ -1572,6 +1824,7 @@ export default function Interview() {
                     {new Date(result.captureStart).toLocaleTimeString()} –{" "}
                     {new Date(result.captureEnd).toLocaleTimeString()}
                   </p>
+                  <RecommendedAction result={result} />
                   {result.speaker === "no_match" && (
                     <p className="concern-flag">
                       Possible speaker substitution flagged for human review.
@@ -1779,6 +2032,7 @@ export default function Interview() {
               <section
                 className="interview-report"
                 aria-label="Interview report"
+                id="interview-report"
               >
                 <div className="results-title-row">
                   <div>

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { normalizeAnalysis } from "../src/lib/results";
+import { normalizeAnalysis, recommendVerification } from "../src/lib/results";
 import { encodeWav, inspectWav } from "../src/lib/wav";
 import {
   createSession,
@@ -43,6 +43,30 @@ for (const [speaker, deepfake, outcome] of [
       outcome,
     ));
 }
+for (const [speaker, deepfake, action] of [
+  ["match", "real", "Continue Interview"],
+  ["match", "fake", "Review Audio"],
+  ["no_match", "real", "Request Identity Recheck"],
+  ["no_match", "fake", "Prioritize Human Review"],
+  ["match", "not_sure", "Request Cleaner Recording"],
+] as const) {
+  test(`decision engine: ${speaker} + ${deepfake} -> ${action}`, () =>
+    assert.equal(recommendVerification({ speaker, deepfake }).action, action));
+}
+test("decision engine safely retries failed, missing, or conflicting provider data", () => {
+  for (const result of [
+    null,
+    {},
+    { speaker: "unavailable", deepfake: "real" },
+    { speaker: "match", deepfake: "unavailable" },
+    { speaker: "match", deepfake: "real", partialFailure: true },
+    { speaker: "match", deepfake: "real", speakerErrorCode: "timeout" },
+    { speaker: "match", deepfake: "real", providerStatus: 502 },
+    { speaker: "match", deepfake: "real", deepfakeErrorMessage: "failed" },
+    { speaker: "unexpected", deepfake: "real" },
+  ])
+    assert.equal(recommendVerification(result).action, "Retry Verification");
+});
 test("partial non-2xx response preserves synthetic-speech concern", () => {
   const result = normalizeAnalysis(
     {
